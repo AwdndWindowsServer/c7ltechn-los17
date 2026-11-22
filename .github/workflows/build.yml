@@ -210,9 +210,13 @@ jobs:
       - name: 准备 C7 内核目录
         run: |
           sudo mkdir -p work/c7-kernel
-          sudo cp km/kernel work/c7-kernel/kernel
-          if [ -s km/dtb ]; then sudo cp km/dtb work/c7-kernel/dtb; else echo "!! 没有 dtb，boot.img 会退回 donor dt 区（预期黑屏）"; fi
-          if [ -s km/modules.tar.gz ]; then sudo mkdir -p work/c7-kernel/modules && sudo tar xzf km/modules.tar.gz -C work/c7-kernel/modules; fi
+          KERN=$(ls km/kernel km/Image.gz-dtb km/Image.gz 2>/dev/null | head -1 || true)
+          DTB=$(ls km/dtb km/msm8953-c7ltechn.dtb 2>/dev/null | head -1 || true)
+          [ -n "$KERN" ] || { echo "!! artifact 里没有内核镜像"; ls -l km/; exit 1; }
+          sudo cp "$KERN" work/c7-kernel/kernel
+          if [ -n "$DTB" ]; then sudo cp "$DTB" work/c7-kernel/dtb; else echo "!! 没有 dtb，boot.img 会退回 donor dt 区（预期黑屏）"; fi
+          if [ -s km/modules.tar.gz ]; then sudo mkdir -p work/c7-kernel/modules && sudo tar xzf km/modules.tar.gz -C work/c7-kernel/modules
+            sudo mkdir -p work/c7-kernel/modules/lib/modules && sudo mv work/c7-kernel/modules/lib/modules/* work/c7-kernel/modules/lib/modules/ 2>/dev/null || true; fi
           file work/c7-kernel/kernel; ls -l work/c7-kernel/
 
       - name: 解包 donor（mido LineageOS 17.1）

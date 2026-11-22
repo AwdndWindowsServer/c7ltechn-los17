@@ -119,6 +119,11 @@ jobs:
           mkdir -p artifacts
           find kernel/out/arch/arm64/boot -maxdepth 1 -name 'Image*' -exec cp {} artifacts/ \;
           find kernel/out/arch/arm64/boot/dts -name 'msm8953-c7ltechn.dtb' -exec cp {} artifacts/ \; || true
+          # 统一命名，供 build.yml 的 port job 直接取用
+          if [ -s artifacts/Image.gz-dtb ]; then cp artifacts/Image.gz-dtb artifacts/kernel
+          elif [ -s artifacts/Image.gz ]; then cp artifacts/Image.gz artifacts/kernel
+          elif [ -s artifacts/Image ]; then cp artifacts/Image artifacts/kernel; fi
+          [ -s artifacts/msm8953-c7ltechn.dtb ] && cp artifacts/msm8953-c7ltechn.dtb artifacts/dtb
           ls -lh artifacts/ || true
           ( cd modules_out && tar czf ../artifacts/modules.tar.gz . ) || true
           cp build.log artifacts/ 2>/dev/null || true
