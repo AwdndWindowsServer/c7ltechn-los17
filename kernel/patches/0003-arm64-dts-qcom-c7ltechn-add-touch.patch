@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 07:19:57 +0000
+Subject: [PATCH] arm64: dts: qcom: c7ltechn: add touch and touchkey nodes
+
+把 C7 的输入设备节点从三星 3.18 msm8953-sec-c7lte_chn-r04.dts 原样搬到 4.9 骨架：
+
+  i2c@11  (i2c-gpio, sda=gpio39 scl=gpio38) -> mms_ts@48      MELFAS MMS449 触摸
+  i2c@23  (i2c-gpio, sda=gpio16 scl=gpio17) -> mc96ft16xx@20  ABOV 触摸键
+
+要点 1：C7 的触摸/触摸键都挂在**软件 I2C**上（不是硬件 QUP 总线），这两条总线的引脚
+        正好对应上一补丁里的 fg_i2c_* / touchkey_i2c_* pin state，pinctrl 引用能直接对上。
+
+要点 2（核对过源码树）：驱动可得性完全不同
+        ✅ ABOV：drivers/input/keyboard/abov_touchkey_16xx.c，compatible 就是 abov,mc96ft16xx
+        ❌ MELFAS MMS449：这颗驱动**不在**公开的三星 3.18 树里（树里只有 MHS204 触摸键的
+           melfas_mip4/），原厂也没编成模块（stock /system/lib/modules 里没有），
+           说明是编进内核但源码没随开源包放出 → 需从别的三星机型内核树取 mms_ts 驱动再移植
+
+一处有意的修正：3.18 原文给触摸写的是 interrupts = <65 0x0>，但 65 是面板 ESD 脚
+（同文件后面 samsung,esd-irq-gpio1 = <&tlmm 65 0>），驱动真正用的是
+melfas,irq-gpio = <&tlmm 59 0x0>，这里按 59 写。
+
+验证（Linux 4.9.337 树）：
+  DTC arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dtb  (245618 bytes，干净编译)
+  反编译确认 mms_ts@48 / mc96ft16xx@20 / i2c@11 / i2c@23 都在，
+  melfas,irq-gpio=<59>、melfas,max_x=1080、melfas,fw_name="tsp_melfas/mms449_c7.fw"、
+  clocks 宏正确展开
+---
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+index f77c3e2..c0e032f 100644
+--- a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+@@ -40,6 +40,90 @@
+ 	qcom,pmic-id = <0x010016 0x010011 0x0 0x0>;
+ };
+ 
++
++/* =============================================================================
++ *  C7 触摸 / 触摸键（从三星 3.18 msm8953-sec-c7lte_chn-r04.dts 原样移植）
++ *
++ *  注意：C7 的两条 I2C 都是**软件 I2C（i2c-gpio）**，不是硬件 QUP 总线 ——
++ *        触摸   : sda=gpio39  scl=gpio38  （对应 pinctrl 里的 fg_i2c_* 组）
++ *        触摸键 : sda=gpio16  scl=gpio17
++ *  驱动情况（已核对三星 3.18 源码树，很重要）：
++ *    ✅ ABOV 触摸键：drivers/input/keyboard/abov_touchkey_16xx.c，compatible "abov,mc96ft16xx" 完全对得上
++ *    ❌ MELFAS MMS449 触摸：那颗驱动**不在**公开的三星 3.18 树里
++ *       （树里只有另一颗 MELFAS 触摸键 melfas_mip4/，是 MHS204；原厂也没把它编成模块，
++ *        说明是编进内核的，但源码没随开源包放出）
++ *       → 需要从别的三星机型内核树里取 mms_ts 驱动（同样是 i2c input 驱动）再移植到 4.9
++ *    节点先摆好，驱动到位即可 probe。
++ * ========================================================================== */
++
++&soc {
++	i2c_tsp: i2c@11 {                     /* TSP SW I2C */
++		cell-index = <11>;
++		compatible = "i2c-gpio";
++		gpios = <&tlmm 39 0>,             /* sda */
++			<&tlmm 38 0>;             /* scl */
++		i2c-gpio,delay-us = <2>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++		status = "okay";
++
++		mms_ts@48 {
++			compatible = "melfas,mms_ts";
++			reg = <0x48>;
++			interrupt-parent = <&tlmm>;
++			/* 3.18 原文件写的是 <65 0x0>（65 其实是面板 ESD 脚），
++			 * 驱动实际用的是下面的 melfas,irq-gpio，这里按 59 写正。 */
++			interrupts = <59 0x0>;
++
++			pinctrl-names = "tsp_gpio_active", "tsp_gpio_suspend";
++			pinctrl-0 = <&tsp_int_active>;
++			pinctrl-1 = <&tsp_int_suspend>;
++
++			melfas,vdd_en = <&tlmm 95 0x0>;
++			melfas,irq-gpio = <&tlmm 59 0x0>;
++
++			melfas,max_x = <1080>;
++			melfas,max_y = <1920>;
++			melfas,fw_name = "tsp_melfas/mms449_c7.fw";
++			melfas,bringup = <0>;
++			melfas,support_lpm;
++
++			clock-names = "iface_clk", "core_clk";
++			clocks = <&clock_gcc clk_gcc_blsp2_ahb_clk>,
++				 <&clock_gcc clk_gcc_blsp2_qup3_i2c_apps_clk>;
++		};
++	};
++
++	i2c_tkey: i2c@23 {                    /* touchkey SW I2C */
++		cell-index = <23>;
++		compatible = "i2c-gpio";
++		gpios = <&tlmm 16 0>,             /* sda */
++			<&tlmm 17 0>;             /* scl */
++		i2c-gpio,delay-us = <2>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++		status = "okay";
++
++		mc96ft16xx@20 {
++			compatible = "abov,mc96ft16xx";
++			reg = <0x20>;
++			interrupt-parent = <&tlmm>;
++			interrupts = <60 0>;
++
++			pinctrl-names = "touchkey_active", "touchkey_suspend";
++			pinctrl-0 = <&touchkey_i2c_active &touchkey_int_active>;
++			pinctrl-1 = <&touchkey_i2c_suspend &touchkey_int_suspend>;
++
++			abov,sda-gpio = <&tlmm 16 0>;
++			abov,scl-gpio = <&tlmm 17 0>;
++			abov,irq-gpio = <&tlmm 60 0>;
++			abov,tkey_en-gpio = <&tlmm 132 0>;
++			abov,firmware_name = "abov/abov_tk_1604_c7.fw";
++			vddo-supply = <&pm8953_l6>;
++		};
++	};
++};
++
+ /* =============================================================================
+  *  TODO（按 kernel/DTS-3.18-to-4.9.md 的顺序填）
+  *

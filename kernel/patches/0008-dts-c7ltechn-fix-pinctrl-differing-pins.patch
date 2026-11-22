@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 07:44:45 +0000
+Subject: [PATCH] arm64: dts: qcom: c7ltechn: keep C7-specific pins that differ from the baseline
+
+修正 pinctrl 转换里的一个**真 bug**：tools/dts-pinctrl-318to49.py 原来按 label 名字
+判重，只要 4.9 基线里有同名 label 就直接丢掉 C7 的定义 —— 但同名不等于同引脚。
+
+实测发现 10 个 label 的引脚号与基线**不同**（这些正是 C7 自己的配置，丢了就出事）：
+
+  mdss_dsi_active/suspend    C7 gpio(50,94)    vs 基线 gpio(59,61)   ← 显示！丢了面板点不亮
+  nfc_int_active/suspend     C7 gpio(21)       vs 基线 gpio(17)      ← NFC 中断
+  cam_sensor_rear_*          C7 gpio(40)       vs 基线 gpio(39,40)
+  cam_sensor_front_*         C7 gpio(129)      vs 基线 gpio(131,132)
+  gpio_key_*                 C7 gpio(85,86)    vs 基线 gpio(85,86,87)
+
+工具已升级：新增 --baseline-dts（从 dtc 预处理结果里连引脚号一起读）与 --rename-prefix，
+引脚号不同的**加前缀保留**（如 c7_mdss_dsi_active / c7_nfc_int_active），
+引脚号相同的才跳过。转换结果从 60 个 pin state 变成 70 个。
+
+验证：DTC msm8953-c7ltechn.dtb 干净编译 (252990 bytes)，反编译确认
+c7_mdss_dsi_active / c7_nfc_int_active 等新 label 都在。
+---
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-pinctrl.dtsi b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-pinctrl.dtsi
+index 17a23b4db..40292e386 100644
+--- a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-pinctrl.dtsi
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-pinctrl.dtsi
+@@ -172,6 +172,29 @@
+ 			bias-disable;
+ 		};
+ 	};
++	c7_cam_sensor_rear_default: c7_cam_sensor_rear_default {
++		mux {
++			pins = "gpio40";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio40";
++			bias-pull-down;
++			drive-strength = <2>;
++			output-low;
++		};
++	};
++	c7_cam_sensor_rear_sleep: c7_cam_sensor_rear_sleep {
++		mux {
++			pins = "gpio40";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio40";
++			bias-pull-down;
++			drive-strength = <2>;
++		};
++	};
+ 	cam_sensor_vio_default: cam_sensor_vio_default {
+ 		mux {
+ 			pins = "gpio134";
+@@ -220,6 +243,29 @@
+ 			output-low;
+ 		};
+ 	};
++	c7_cam_sensor_front_default: c7_cam_sensor_front_default {
++		mux {
++			pins = "gpio129";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio129";
++			bias-pull-down;
++			output-low;
++			drive-strength = <2>;
++		};
++	};
++	c7_cam_sensor_front_sleep: c7_cam_sensor_front_sleep {
++		mux {
++			pins = "gpio129";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio129";
++			bias-disable;
++			drive-strength = <2>;
++		};
++	};
+ 	flash_led_active: flash_led_active {
+ 		mux {
+ 			pins = "gpio8","gpio20","gpio34","gpio36";
+@@ -418,6 +464,28 @@
+ 			bias-disable;
+ 		};
+ 	};
++	c7_mdss_dsi_active: c7_mdss_dsi_active {
++		mux {
++			pins = "gpio50", "gpio94";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio50", "gpio94";
++			drive-strength = <8>;
++			bias-pull-down;
++		};
++	};
++	c7_mdss_dsi_suspend: c7_mdss_dsi_suspend {
++		mux {
++			pins = "gpio50", "gpio94";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio50", "gpio94";
++			drive-strength = <2>;
++			bias-pull-down;
++		};
++	};
+ 	spi1_default: spi1_default {
+ 		mux {
+ 			pins = "gpio0", "gpio1", "gpio3";
+@@ -462,6 +530,28 @@
+ 			bias-disable = <0>;
+ 		};
+ 	};
++	c7_nfc_int_active: c7_nfc_int_active {
++		mux {
++			pins = "gpio21";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio21";
++			drive-strength = <2>;
++			bias-pull-down;
++		};
++	};
++	c7_nfc_int_suspend: c7_nfc_int_suspend {
++		mux {
++			pins = "gpio21";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio21";
++			drive-strength = <2>;
++			bias-pull-down;
++		};
++	};
+ 	nfc_enable_active: nfc_enable_active {
+ 		mux {
+ 			pins = "gpio67";
+@@ -661,6 +751,28 @@
+ 			bias-pull-down;
+ 		};
+ 	};
++	c7_gpio_key_active: c7_gpio_key_active {
++		mux {
++			pins = "gpio85", "gpio86";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio85", "gpio86";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++	};
++	c7_gpio_key_suspend: c7_gpio_key_suspend {
++		mux {
++			pins = "gpio85", "gpio86";
++			function = "gpio";
++		};
++		config {
++			pins = "gpio85", "gpio86";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++	};
+ 	hall_int_default: hall_int_default {
+ 		mux {
+ 			pins = "gpio44";

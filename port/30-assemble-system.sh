@@ -1,0 +1,135 @@
+#!/bin/bash
+# =============================================================================
+#  30-assemble-system.sh — 组装 C7 的 system.img
+#
+#  默认只做"最小改动"：donor 的 system 原样扩到 C7 SYSTEM 分区大小。
+#  第一版的目的就是先验证「4.9 内核 + C7 面板驱动 + Android 10 用户态」能不能点亮，
+#  用户态越接近 donor 原始状态，变量越少。
+#
+#  可选步骤（开关都在 config.sh / 环境变量）：
+#    · donor 带独立 vendor.img → 合并进 /system/vendor，/vendor 做成符号链接
+#    · C7_BLOBS=1 → 叠加 C7 原厂 blob（RIL/相机/传感器/音频参数/校准固件）
+#    · PATCH_PROPS=1 → 改 build.prop 设备身份为 SM-C7000
+# =============================================================================
+set -euo pipefail
+source "$(dirname "$(readlink -f "$0")")/config.sh"
+
+DONOR_SYS="$WORK/donor/system.img"
+DONOR_VND="$WORK/donor/vendor.img"
+[ -s "$DONOR_SYS" ] || die "缺少 donor system.img，先跑 20-unpack.sh"
+
+BUILD="$WORK/build"; SYS_IMG="$BUILD/system.img"; MNT="$BUILD/mnt"
+mkdir -p "$BUILD" "$MNT"
+
+if [ ! -s "$SYS_IMG" ]; then
+  log "[1/6] 复制 donor system.img …"
+  cp --sparse=always "$DONOR_SYS" "$SYS_IMG"
+else
+  log "[1/6] 复用已有 $SYS_IMG"
+fi
+
+DONOR_APPARENT=$(du -m --apparent-size "$SYS_IMG" | cut -f1)
+TARGET_MB=$((SYSTEM_IMG_SIZE / 1024 / 1024))
+log "    donor system: ${DONOR_APPARENT} MiB，C7 SYSTEM 可用: ${TARGET_MB} MiB"
+[ "$DONOR_APPARENT" -le "$TARGET_MB" ] || die "donor system 比 C7 SYSTEM 分区还大（${DONOR_APPARENT} > ${TARGET_MB} MiB）"
+
+log "[2/6] 扩容 ext4 到 ${TARGET_MB} MiB …"
+truncate -s "$SYSTEM_IMG_SIZE" "$SYS_IMG"
+e2fsck -f -y "$SYS_IMG" >/dev/null 2>&1 || true
+resize2fs "$SYS_IMG" >/dev/null 2>&1 || warn "resize2fs 失败（空间够用即可继续）"
+
+mountpoint -q "$MNT" && umount "$MNT"
+mount -o loop,rw "$SYS_IMG" "$MNT"
+trap 'umount "$MNT" 2>/dev/null || true' EXIT
+FREE_MB=$(( $(df -k --output=avail "$MNT" | tail -1) / 1024 ))
+log "    挂载 ok，可用空间 ${FREE_MB} MiB"
+log "    根目录: $(ls "$MNT" | tr '\n' ' ')"
+
+# ------------------------------------------------ 3. donor 独立 vendor 合并
+if [ -s "$DONOR_VND" ]; then
+  log "[3/6] donor 有独立 vendor.img → 合并进 /system/vendor …"
+  rm -rf "$MNT/system/vendor"; mkdir -p "$MNT/system/vendor"
+  VND_MNT="$BUILD/mnt-vnd"; mkdir -p "$VND_MNT"
+  mountpoint -q "$VND_MNT" && umount "$VND_MNT"
+  mount -o loop,ro "$DONOR_VND" "$VND_MNT"
+  cp -a "$VND_MNT/." "$MNT/system/vendor/"
+  umount "$VND_MNT"
+  [ -L "$MNT/vendor" ] || { rm -rf "$MNT/vendor"; ln -s /system/vendor "$MNT/vendor"; }
+  log "    vendor 文件数: $(find "$MNT/system/vendor" -type f | wc -l)，/vendor -> /system/vendor 已建立"
+else
+  log "[3/6] donor 是 vendor-in-system 布局，跳过 vendor 合并"
+  [ -e "$MNT/system/vendor" ] && log "    /system/vendor 已存在（$(find "$MNT/system/vendor" -maxdepth 1 | wc -l) 项）"
+fi
+
+# ------------------------------------------------ 4. C7 原厂 blob（可选）
+if [ "${C7_BLOBS:-0}" = "1" ] && [ -d "$C7_VENDOR_DIR" ]; then
+  log "[4/6] 叠加 C7 原厂 blob（不覆盖 donor 同名文件）…"
+  C7V="$C7_VENDOR_DIR/vendor"; C7S="$C7_VENDOR_DIR/system"
+  ADDED=0; KEPT=0
+  while IFS= read -r f; do
+    rel="${f#./}"
+    d="$MNT/system/vendor/$rel"
+    if [ -e "$d" ] || [ -L "$d" ]; then KEPT=$((KEPT+1)); continue; fi
+    mkdir -p "$(dirname "$d")"; cp -a "$C7V/$rel" "$d" 2>/dev/null && ADDED=$((ADDED+1))
+  done < <( cd "$C7V" && find . -type f )
+  while IFS= read -r f; do
+    rel="${f#./}"
+    d="$MNT/system/$rel"
+    [ -e "$d" ] || [ -L "$d" ] && continue
+    mkdir -p "$(dirname "$d")"; cp -a "$C7S/$rel" "$d" 2>/dev/null || true
+  done < <( cd "$C7S" && find . -type f )
+  # 白名单：与 C7 硬件强绑定的必须用原厂
+  for f in bin/hw/rild lib64/libsec-ril.so lib64/libsec-ril-dsds.so lib64/libsecril-client.so \
+           lib/hw/sensors.msm8953.so lib64/hw/sensors.msm8953.so \
+           etc/mixer_paths.xml etc/mixer_paths_mtp.xml etc/audio_platform_info.xml \
+           etc/Tfa9897.cnt etc/gps.conf; do
+    [ -e "$C7V/$f" ] && { mkdir -p "$(dirname "$MNT/system/vendor/$f")"; cp -af "$C7V/$f" "$MNT/system/vendor/$f"; }
+  done
+  for d in bhy_firmware firmware/wlan etc/wifi etc/camera; do
+    [ -d "$C7V/$d" ] || continue
+    rm -rf "$MNT/system/vendor/$d"; mkdir -p "$MNT/system/vendor/$d"
+    cp -a "$C7V/$d/." "$MNT/system/vendor/$d/"
+  done
+  # HIDL 1.0 base shim（三星 8.0 时代的库需要）
+  for dir in lib lib64; do
+    tgt="$MNT/system/vendor/$dir/libhidlbase.so"
+    lnk="$MNT/system/vendor/$dir/android.hidl.base@1.0.so"
+    [ -e "$tgt" ] && [ ! -e "$lnk" ] && ln -s libhidlbase.so "$lnk"
+  done
+  log "    新增 $ADDED 个 C7 文件（donor 已有 $KEPT 个同名，保留 donor 版本）"
+else
+  log "[4/6] 跳过 C7 blob 叠加（C7_BLOBS=${C7_BLOBS:-0}）"
+fi
+
+# ------------------------------------------------ 5. 属性（可选）
+if [ "${PATCH_PROPS:-0}" = "1" ]; then
+  log "[5/6] 改写 build.prop 设备身份 …"
+  patch_props() {
+    local p="$1"; [ -f "$p" ] || return 0
+    sed -i -E \
+      -e "s|^ro\.product\.(system\.)?device=.*|ro.product.device=$DEVICE|" \
+      -e "s|^ro\.product\.(system\.)?name=.*|ro.product.name=$DEVICE_NAME|" \
+      -e "s|^ro\.product\.(system\.)?model=.*|ro.product.model=$DEVICE_MODEL|" \
+      -e "s|^ro\.product\.(system\.)?brand=.*|ro.product.brand=$DEVICE_BRAND|" \
+      -e "s|^ro\.product\.(system\.)?manufacturer=.*|ro.product.manufacturer=$DEVICE_BRAND|" \
+      "$p"
+  }
+  for p in "$MNT/system/build.prop" "$MNT/system/system_ext/etc/build.prop" \
+           "$MNT/system/product/etc/build.prop" "$MNT/system/vendor/build.prop" "$MNT/system/etc/prop.default"; do
+    patch_props "$p"
+  done
+  grep -q "SM-C7000 port" "$MNT/system/vendor/build.prop" 2>/dev/null || {
+    { echo; echo "# SM-C7000 (c7ltechn) port — c7ltechn-los17";
+      echo "ro.sf.lcd_density=420"; } >> "$MNT/system/vendor/build.prop"
+  }
+else
+  log "[5/6] 保留 donor 的设备身份（PATCH_PROPS=0）"
+fi
+
+# ------------------------------------------------ 6. 收尾
+log "[6/6] 卸载 + 一致性检查 …"
+sync; umount "$MNT"; trap - EXIT
+e2fsck -f -y "$SYS_IMG" >/dev/null 2>&1 || warn "e2fsck 报告问题（只读元数据常见，一般无碍）"
+tune2fs -c 0 -i 0 "$SYS_IMG" >/dev/null 2>&1 || true
+log "system 镜像就绪: $SYS_IMG ($(du -h --apparent-size "$SYS_IMG" | cut -f1))"
+log "下一步: 40-make-bootimg.sh"

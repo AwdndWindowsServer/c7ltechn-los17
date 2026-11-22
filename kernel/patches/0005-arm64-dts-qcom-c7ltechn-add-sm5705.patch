@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 07:29:12 +0000
+Subject: [PATCH] arm64: dts: qcom: c7ltechn: add SM5705 power nodes
+
+把 C7 的 SM5705 电源节点从三星 3.18 msm8953-sec-c7lte_chn-r04.dts 移植到 4.9：
+
+  i2c@8 (i2c-gpio, sda=gpio98 scl=gpio99)
+    ├── muic-sm5705@25   MUIC（USB/OTG/充电器识别），IRQ gpio63
+    ├── sm5705@49        SM5705 充电器，IRQ gpio61
+    └── sm5705_fled      闪光灯/手电筒（双路：flash-en gpio36/gpio20，torch-en gpio34/gpio8）
+  根节点 muic { }        配件识别电阻表（+OTG/-MHL/+TA/+USB/…）
+
+引脚引用全部落在补丁 0002 转换过来的 pin state 上：
+  sm5705_i2c_{default,active,suspend} / sm5705_interrupt_default /
+  sm5705_rst_default / sm5705_rgb_default / charger_int_active
+
+驱动（都在公开三星 3.18 树里，待移植到 4.9）：
+  drivers/battery/sm5705_charger.c、sm5705_charger_oper.c、sm5705_fuelgauge.c
+  另外三星还提供了一份 msm8953 通用的 arch/arm64/boot/dts/samsung/msm8953/msm8953-sm5705.dtsi
+  可以参考（C7 自己的版本略有差异，本补丁用的是 C7 原值）。
+
+验证（Linux 4.9.337 树）：
+  DTC arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dtb  (247533 bytes，干净编译)
+  反编译确认 sm5705@49(reg 0x49, irq gpio61) / muic-sm5705@25(reg 0x25, irq gpio63) /
+  sm5705_fled / muic / i2c@8 都在，pinctrl 引用已解析
+---
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-sm5705.dtsi b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-sm5705.dtsi
+new file mode 100644
+index 000000000..4df12cd20
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-sm5705.dtsi
+@@ -0,0 +1,113 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * C7 (SM-C7000) 的 SM5705 电源节点 —— 从三星 3.18
++ * arch/arm64/boot/dts/samsung/msm8953/msm8953-sec-c7lte_chn-r04.dts 移植到 4.9。
++ *
++ * 包含：MUIC（USB/OTG/充电器识别）、SM5705 充电器、闪光灯/手电筒 LED、MUIC 配件表。
++ * 总线是**软件 I2C**（sda=gpio98 / scl=gpio99），引脚正好对应我们已转换过来的
++ * sm5705_i2c_* / sm5705_interrupt_* / sm5705_rst_* / sm5705_rgb_* / charger_int_active。
++ *
++ * 驱动：drivers/battery/sm5705_charger.c、sm5705_charger_oper.c、sm5705_fuelgauge.c
++ *       （都在公开三星 3.18 树里，待移植到 4.9）
++ */
++
++&soc {
++	i2c_sm5705: i2c@8 {                    /* SM5705 SW I2C */
++		cell-index = <8>;
++		compatible = "i2c-gpio";
++		gpios = <&tlmm 98 0>,             /* sda */
++			<&tlmm 99 0>;             /* scl */
++		i2c-gpio,delay-us = <2>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++		status = "okay";
++
++		muic-sm5705@25 {
++			status = "okay";
++			compatible = "muic-universal";
++			reg = <0x25>;
++			interrupt-parent = <&tlmm>;
++			interrupts = <63 0>;
++			muic-universal,irq-gpio = <&tlmm 63 0x00>;
++			sm5705,wakeup;
++			muic-universal,chip_name = "sm,sm5705";
++			pinctrl-names = "muic_i2c_pins_default",
++					"muic_i2c_pins_active",
++					"muic_i2c_pins_suspend";
++			pinctrl-0 = <&sm5705_i2c_default &sm5705_interrupt_default
++				     &sm5705_rst_default &sm5705_rgb_default>;
++			pinctrl-1 = <&sm5705_i2c_active &sm5705_interrupt_default>;
++			pinctrl-2 = <&sm5705_i2c_suspend &sm5705_interrupt_default>;
++		};
++
++		sm5705@49 {
++			compatible = "sm,sm5705";
++			reg = <0x49>;
++			interrupt-parent = <&tlmm>;
++			sm5705,irq-gpio = <&tlmm 61 0x00>;
++			pinctrl-names = "default";
++			pinctrl-0 = <&charger_int_active>;
++		};
++
++		sm5705_fled {
++			compatible = "siliconmitus,sm5705-fled";
++			enable = <1 1>;
++			sm5705_fled@0 {
++				id = <0>;
++				status = "okay";
++				flash-mode-current-mA = <1000>;
++				torch-mode-current-mA = <150>;
++				used-gpio-control = <1>;
++				flash-en-gpio = <&tlmm 36 0x00>;
++				torch-en-gpio = <&tlmm 34 0x00>;
++			};
++			sm5705_fled@1 {
++				id = <1>;
++				status = "okay";
++				flash-mode-current-mA = <400>;
++				torch-mode-current-mA = <50>;
++				used-gpio-control = <1>;
++				flash-en-gpio = <&tlmm 20 0x00>;
++				torch-en-gpio = <&tlmm 8 0x00>;
++			};
++			sm5705_leds1: sm5705-leds1 {
++				ledname = "leds-sec1";
++				id = <0>;
++				brightness = <0xC>;
++				timeout = <0x3>;
++				default-trigger = "flash_trigger";
++			};
++			sm5705_leds2: sm5705-leds2 {
++				ledname = "torch-sec1";
++				id = <1>;
++				brightness = <0xC>;
++				timeout = <0xF>;
++			};
++		};
++	};
++
++	/* MUIC 配件识别表（无 compatible，由 MUIC 驱动按节点名查找） */
++	muic {
++		status = "okay";
++		muic,support-list = "+OTG:GND",
++			"-MHL:1K",
++			"-VZW Accessory:28.7K",
++			"-VZW Incompatible:34K",
++			"-Smartdock:40.2K",
++			"-HMT:49.9K",
++			"-Audiodock:64.9K",
++			"-USB LANHUB:80.07K",
++			"-Charging Cable:102K",
++			"+Game Pad:121K",
++			"+Jig USB Off:255K",
++			"+Jig USB On:301K",
++			"+Deskdock:365K",
++			"+TYPE2 Charger:442K",
++			"+Jig UART Off:523K",
++			"+Jig UART On:619K",
++			"+TA:OPEN",
++			"+USB:OPEN",
++			"+CDP:OPEN",
++			"+Undefined Charging:XXX";
++	};
++};
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+index c0e032f85..06369f533 100644
+--- a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+@@ -26,6 +26,9 @@
+ /* ---- C7 引脚配置（由 tools/dts-pinctrl-318to49.py 从三星 3.18 自动转换，143 个 pin state）---- */
+ #include "msm8953-c7ltechn-pinctrl.dtsi"
+ 
++/* ---- C7 电源：SM5705 MUIC/充电/闪光灯（从三星 3.18 移植）---- */
++#include "msm8953-c7ltechn-sm5705.dtsi"
++
+ / {
+ 	model = "Samsung Galaxy C7 (SM-C7000)";
+ 	compatible = "samsung,c7ltechn", "qcom,msm8953-mtp", "qcom,msm8953", "qcom,mtp";

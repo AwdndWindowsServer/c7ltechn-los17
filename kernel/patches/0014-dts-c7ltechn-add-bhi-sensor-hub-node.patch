@@ -1,0 +1,78 @@
+From 75555bfde692bb6027a35ff630cf66234e9e1681 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 18:20:00 +0000
+Subject: [PATCH] arm64: dts: qcom: c7ltechn: add the Bosch BHI sensor hub node
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ROM 里注入的传感器 HAL 是三星原厂的 vendor/lib(64)/hw/sensors.msm8953.so，
+它对应的内核侧就是 Bosch BHI 传感器中枢（drivers/misc/bhy/，CONFIG_SENSORS_BHI），
+donor 走的高通 SSC 栈与它不通用 —— 这个节点是传感器能不能工作的前提。
+
+  + arch/arm64/boot/dts/qcom/msm8953-c7ltechn-bhy.dtsi   新文件
+  ~ .../msm8953-c7ltechn.dts                              include 新 dtsi
+
+节点照三星 3.18 的 msm8953-sec-c7lte_chn-r04.dts：i2c_5（BLSP2 QUP1）上的
+bhy@28、中断 gpio42、LDO 使能 gpio66（用已转换好的 sensor_ldo_en_default）、
+bhy,i2c-pull-up = 1、bhy,acc-axis = 0。
+
+注：i2c_5_active/i2c_5_sleep 不用我们自己加 —— 4.9 基线 msm8953-pinctrl.dtsi
+里本来就有（gpio18/19 + blsp_i2c5，与三星一致）；重复定义 label 会让 dtc 报
+"Input tree has errors"（已实测踩过）。
+---
+ .../boot/dts/qcom/msm8953-c7ltechn-bhy.dtsi   | 29 +++++++++++++++++++
+ arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts |  1 +
+ 2 files changed, 30 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/qcom/msm8953-c7ltechn-bhy.dtsi
+
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-bhy.dtsi b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-bhy.dtsi
+new file mode 100644
+index 0000000..9f3a624
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-bhy.dtsi
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * C7 (SM-C7000) 的传感器中枢（Bosch BHI）—— 取自三星 3.18
++ * arch/arm64/boot/dts/samsung/msm8953/msm8953-sec-c7lte_chn-r04.dts 的 bhy@28 节点，
++ * 只把总线 pinctrl 补成 4.9 的写法（三星原文件把 pinctrl 放在 i2c_5 节点里）。
++ *
++ * 总线：BLSP2 QUP1（i2c_5，gpio18/19）  中断：gpio42
++ * 传感器 LDO 使能：gpio66（bhy,ldo_enable，同时给 i2c_5 挂 sensor_ldo_en_default）
++ * 驱动：drivers/misc/bhy/{bhy_i2c.c,bhy_core.c,bstclass.c}（CONFIG_SENSORS_BHI）
++ * 用户态：C7 原厂 HAL vendor/lib(64)/hw/sensors.msm8953.so + vendor/bhy_firmware/
++ *        （两者都已由 port/30-assemble-system.sh 注入，所以内核侧必须配套）
++ */
++&i2c_5 {
++	status = "okay";
++	pinctrl-names = "i2c_active", "i2c_sleep";
++	pinctrl-0 = <&i2c_5_active &sensor_ldo_en_default>;
++	pinctrl-1 = <&i2c_5_sleep>;
++
++	bhy@28 {
++		compatible = "bhy";
++		reg = <0x28>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <42 0>;
++		bhy,gpio_irq = <&tlmm 42 0x00>;
++		bhy,ldo_enable = <&tlmm 66 0x01>;
++		bhy,i2c-pull-up = <1>;
++		bhy,acc-axis = <0>;
++	};
++};
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+index c3d82ca..2777f38 100644
+--- a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+@@ -37,6 +37,7 @@
+ 
+ /* ---- C7 NFC（PN548 / compatible "pn547"）---- */
+ #include "msm8953-c7ltechn-nfc.dtsi"
++#include "msm8953-c7ltechn-bhy.dtsi"
+ 
+ / {
+ 	model = "Samsung Galaxy C7 (SM-C7000)";
+-- 
+2.43.0
+

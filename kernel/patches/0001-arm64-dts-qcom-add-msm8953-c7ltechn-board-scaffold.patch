@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 07:10:44 +0000
+Subject: [PATCH] arm64: dts: qcom: add msm8953-c7ltechn board scaffold
+
+C7 (SM-C7000 / c7ltechn) 的 4.9 板级骨架：复用 msm8953 SoC dtsi + MTP 板级公共节点，
+并把 board-id 设成 C7 的真实值 <8 4>（mido 是 <8 0>，照抄会选不上 DTB）。
+
+已在 zeelog/android_kernel_xiaomi_mido (lineage-22.2, Linux 4.9.337) 上验证可编译：
+  make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+       CROSS_COMPILE_ARM32=arm-linux-gnueabi- qcom/msm8953-c7ltechn.dtb
+  -> DTC arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dtb (234940 bytes)
+  反编译校验: model="Samsung Galaxy C7 (SM-C7000)", qcom,msm-id=<0x125 0x0>,
+              qcom,board-id=<0x8 0x4>, 1124 个节点
+
+注意：C7 独有外设（面板/触摸/指纹/SM5705/BHI/NFC/音频）尚未接入，
+见 kernel/DTS-3.18-to-4.9.md 与文件内 TODO。
+---
+diff --git a/arch/arm64/boot/dts/qcom/Makefile b/arch/arm64/boot/dts/qcom/Makefile
+index 84aef12..14078e4 100644
+--- a/arch/arm64/boot/dts/qcom/Makefile
++++ b/arch/arm64/boot/dts/qcom/Makefile
+@@ -539,6 +539,7 @@ dtb-$(CONFIG_MACH_XIAOMI_C6) += msm8953-qrd-sku3-mido.dtb
+ else
+ dtb-$(CONFIG_ARCH_MSM8953) += msm8953-cdp.dtb \
+ 	msm8953-mtp.dtb \
++	msm8953-c7ltechn.dtb \
+ 	msm8953-ext-codec-mtp.dtb \
+ 	msm8953-qrd-sku3.dtb \
+ 	msm8953-rcm.dtb \
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+new file mode 100644
+index 0000000..5af1132
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+@@ -0,0 +1,58 @@
++/*
++ * Samsung Galaxy C7 (SM-C7000 / c7ltechn) — msm8953 board DTS scaffold (Linux 4.9)
++ *
++ * 这是 C7 4.9 内核移植的"落地点"：先把板级骨架搭起来并**保证能编过**，
++ * 再按 kernel/DTS-3.18-to-4.9.md 一个外设一个外设地往里填。
++ *
++ * 当前状态（诚实的说明）：
++ *   ✅ SoC 级节点（CPU/内存/时钟/regulator/UART/存储/USB/I2C 控制器）来自 4.9 树自带的 msm8953 dtsi
++ *   ✅ board-id 用的 C7 真实值 <8 4>（来自三星 3.18 的 msm8953-sec-c7lte_chn-r04.dts）
++ *   ⛔ C7 独有外设**尚未接**：面板 / 触摸 / 指纹 / SM5705 / BHI / NFC / 音频
++ *      → 见文件末尾 TODO，以及 kernel/dts-3.18-source/ 里的 3.18 源料
++ *
++ * Copyright (c) 2026 C7ROM port project. GPL-2.0.
++ */
++
++/dts-v1/;
++
++/* ---- SoC 与 PMIC（4.9 树自带）---- */
++#include "msm8953.dtsi"
++#include "pmi8950.dtsi"
++
++/* ---- 板级公共节点：先复用 MTP 的（i2c/spi/regulator/sdcard/usb/mdss 控制器都在这里）---- */
++#include "msm8953-mtp.dtsi"
++#include "msm8953-pmi8950.dtsi"
++
++/ {
++	model = "Samsung Galaxy C7 (SM-C7000)";
++	compatible = "samsung,c7ltechn", "qcom,msm8953-mtp", "qcom,msm8953", "qcom,mtp";
++
++	/*
++	 * aboot 靠 appended DTB 里的这三个 id 选 DTB：
++	 *   qcom,msm-id   = <293 0x0>   ← 已在 msm8953.dtsi 里（MSM8953 = 293）
++	 *   qcom,board-id = <8 4>       ← C7 的真实值（mido 是 <8 0>，照抄会选不上/选错）
++	 *   qcom,pmic-id  = <...>       ← PM8953 + PMI8950 组合，与 mido 同代，先沿用
++	 */
++	qcom,board-id = <8 4>;
++	qcom,pmic-id = <0x010016 0x010011 0x0 0x0>;
++};
++
++/* =============================================================================
++ *  TODO（按 kernel/DTS-3.18-to-4.9.md 的顺序填）
++ *
++ *  1) 面板：C7 r04 = S6E3FA3_AMS598KH01（见 kernel/c7-reference-defconfig-3.18.txt）
++ *     - 3.18 源：drivers/video/msm/mdss/samsung/S6E3FA3_AMS598KH01/dsi_panel_*.dtsi
++ *     - 两条路线（搬三星 mdss / 改标准 qcom 面板节点）见对照手册 §4
++ *
++ *  2) 触摸：MELFAS MMS449 + ABOV 触摸键
++ *     - 3.18 源：msm8953-sec-c7lte_chn-pinctrl-r02.dtsi 里对应的 i2c 节点与 GPIO
++ *     - 4.9 写法：&i2c_N { status = "okay"; touchscreen@XX { ... } }
++ *
++ *  3) 指纹：VFS7xxx（SPI4，GPIO12-15）
++ *  4) 传感器中枢：Broadcom BHI（3.18 源里 compatible = "bhy"）
++ *  5) 电源：SM5705（charger/fuelgauge/MUIC/flash），要替换掉 MTP 里的 pmi8950 charger 节点
++ *  6) NFC/eSE：PN548 + eSE P3
++ *  7) 音频：QC codec + TFA9897 功放（3.18 里的 msm-sec-audio.dtsi）
++ *
++ *  这些节点的 C7 真实参数都在 kernel/dts-3.18-source/ 里，逐条搬即可。
++ * ========================================================================== */

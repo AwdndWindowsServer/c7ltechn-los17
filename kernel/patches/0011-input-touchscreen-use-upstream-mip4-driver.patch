@@ -1,0 +1,219 @@
+From 7d78ac19d0087aaa5bd504022d18b82d7a7cdea5 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 16:10:00 +0000
+Subject: [PATCH] input: touchscreen: use upstream MIP4 driver for the C7
+ touchscreen
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+C7（SM-C7000）的触摸是 Melfas MIP4 协议族（MMS449），主线 4.14 的
+melfas_mip4.c（MIP 4.0 Rev 5.4）与 4.9 是同代代码，直接编过 0 error；
+mido 树里原本那份是 Rev 4.6，缺 VID/PID/从地址探测，换成 5.4。
+
+  ~ drivers/input/touchscreen/melfas_mip4.c   Rev 4.6 -> Rev 5.4
+      + 上电前先 i2c_smbus_xfer 探一下地址是否存在（不存在不算致命错误）
+      + 读 product_id / VID / PID / slave_addr，填充 input->id.product
+      + 固件只在 sysfs update_fw 时按需 request_firmware，
+        probe 路径不需要固件 blob（C7 的触摸固件在芯片里，原厂 system 也没有）
+  ~ arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+      compatible = "melfas,mip4_ts", "melfas,mms_ts"（并列保留三星 original）
+      ce-gpios = <&tlmm 95 0>（主线驱动用 ce-gpios 控芯片使能 = 三星 vdd_en）
+  ~ arch/arm64/configs/c7ltechn_defconfig      CONFIG_TOUCHSCREEN_MELFAS_MIP4=y
+
+Kconfig/Makefile 条目 mido 树里本来就有，不必新增。
+---
+ arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts |  7 +-
+ arch/arm64/configs/c7ltechn_defconfig         |  1 +
+ drivers/input/touchscreen/melfas_mip4.c       | 64 +++++++++++++++++--
+ 3 files changed, 66 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+index 16e3b4ed0..c3d82ca6d 100644
+--- a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+@@ -80,7 +80,9 @@
+ 		status = "okay";
+ 
+ 		mms_ts@48 {
+-			compatible = "melfas,mms_ts";
++			/* C7ROM: 主 compatible 用主线 MIP4 驱动（MMS449 属 MIP4 协议族），
++			 * 保留三星 original compatible 作为并列项，方便日后换回三星驱动。 */
++			compatible = "melfas,mip4_ts", "melfas,mms_ts";
+ 			reg = <0x48>;
+ 			interrupt-parent = <&tlmm>;
+ 			/* 3.18 原文件写的是 <65 0x0>（65 其实是面板 ESD 脚），
+@@ -91,6 +93,9 @@
+ 			pinctrl-0 = <&tsp_int_active>;
+ 			pinctrl-1 = <&tsp_int_suspend>;
+ 
++			/* 主线驱动用 ce-gpios 控制芯片使能（= 三星的 vdd_en，gpio95） */
++			ce-gpios = <&tlmm 95 0>;
++
+ 			melfas,vdd_en = <&tlmm 95 0x0>;
+ 			melfas,irq-gpio = <&tlmm 59 0x0>;
+ 
+diff --git a/arch/arm64/configs/c7ltechn_defconfig b/arch/arm64/configs/c7ltechn_defconfig
+index 28f22114d..5c7a06712 100644
+--- a/arch/arm64/configs/c7ltechn_defconfig
++++ b/arch/arm64/configs/c7ltechn_defconfig
+@@ -719,3 +719,4 @@ CONFIG_SEC_MUX_SEL=y
+ CONFIG_SENSORS_FINGERPRINT=y
+ CONFIG_SENSORS_VFS7XXX=y
+ CONFIG_NFC_PN547_SAMSUNG=y
++CONFIG_TOUCHSCREEN_MELFAS_MIP4=y
+diff --git a/drivers/input/touchscreen/melfas_mip4.c b/drivers/input/touchscreen/melfas_mip4.c
+index cec2df449..05108c2fe 100644
+--- a/drivers/input/touchscreen/melfas_mip4.c
++++ b/drivers/input/touchscreen/melfas_mip4.c
+@@ -33,7 +33,7 @@
+ 
+ /*****************************************************************
+  * Protocol
+- * Version : MIP 4.0 Rev 4.6
++ * Version : MIP 4.0 Rev 5.4
+  *****************************************************************/
+ 
+ /* Address */
+@@ -81,6 +81,9 @@
+ #define MIP4_R1_INFO_IC_HW_CATEGORY		0x77
+ #define MIP4_R1_INFO_CONTACT_THD_SCR		0x78
+ #define MIP4_R1_INFO_CONTACT_THD_KEY		0x7A
++#define MIP4_R1_INFO_PID				0x7C
++#define MIP4_R1_INFO_VID				0x7E
++#define MIP4_R1_INFO_SLAVE_ADDR			0x80
+ 
+ #define MIP4_R0_EVENT				0x02
+ #define MIP4_R1_EVENT_SUPPORTED_FUNC		0x00
+@@ -157,7 +160,9 @@ struct mip4_ts {
+ 
+ 	char phys[32];
+ 	char product_name[16];
++	u16 product_id;
+ 	char ic_name[4];
++	char fw_name[32];
+ 
+ 	unsigned int max_x;
+ 	unsigned int max_y;
+@@ -248,10 +253,21 @@ static int mip4_get_fw_version(struct mip4_ts *ts)
+  */
+ static int mip4_query_device(struct mip4_ts *ts)
+ {
++	union i2c_smbus_data dummy;
+ 	int error;
+ 	u8 cmd[2];
+ 	u8 buf[14];
+ 
++	/*
++	 * Make sure there is something at this address as we do not
++	 * consider subsequent failures as fatal.
++	 */
++	if (i2c_smbus_xfer(ts->client->adapter, ts->client->addr,
++			   0, I2C_SMBUS_READ, 0, I2C_SMBUS_BYTE, &dummy) < 0) {
++		dev_err(&ts->client->dev, "nothing at this address\n");
++		return -ENXIO;
++	}
++
+ 	/* Product name */
+ 	cmd[0] = MIP4_R0_INFO;
+ 	cmd[1] = MIP4_R1_INFO_PRODUCT_NAME;
+@@ -264,6 +280,23 @@ static int mip4_query_device(struct mip4_ts *ts)
+ 		dev_dbg(&ts->client->dev, "product name: %.*s\n",
+ 			(int)sizeof(ts->product_name), ts->product_name);
+ 
++	/* Product ID */
++	cmd[0] = MIP4_R0_INFO;
++	cmd[1] = MIP4_R1_INFO_PID;
++	error = mip4_i2c_xfer(ts, cmd, sizeof(cmd), buf, 2);
++	if (error) {
++		dev_warn(&ts->client->dev,
++			 "Failed to retrieve product id: %d\n", error);
++	} else {
++		ts->product_id = get_unaligned_le16(&buf[0]);
++		dev_dbg(&ts->client->dev, "product id: %04X\n", ts->product_id);
++	}
++
++	/* Firmware name */
++	snprintf(ts->fw_name, sizeof(ts->fw_name),
++		"melfas_mip4_%04X.fw", ts->product_id);
++	dev_dbg(&ts->client->dev, "firmware name: %s\n", ts->fw_name);
++
+ 	/* IC name */
+ 	cmd[0] = MIP4_R0_INFO;
+ 	cmd[1] = MIP4_R1_INFO_IC_NAME;
+@@ -1269,11 +1302,11 @@ static ssize_t mip4_sysfs_fw_update(struct device *dev,
+ 	const struct firmware *fw;
+ 	int error;
+ 
+-	error = request_firmware(&fw, MIP4_FW_NAME, dev);
++	error = request_firmware(&fw, ts->fw_name, dev);
+ 	if (error) {
+ 		dev_err(&ts->client->dev,
+ 			"Failed to retrieve firmware %s: %d\n",
+-			MIP4_FW_NAME, error);
++			ts->fw_name, error);
+ 		return error;
+ 	}
+ 
+@@ -1348,6 +1381,25 @@ static ssize_t mip4_sysfs_read_hw_version(struct device *dev,
+ 
+ static DEVICE_ATTR(hw_version, S_IRUGO, mip4_sysfs_read_hw_version, NULL);
+ 
++static ssize_t mip4_sysfs_read_product_id(struct device *dev,
++					  struct device_attribute *attr,
++					  char *buf)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct mip4_ts *ts = i2c_get_clientdata(client);
++	size_t count;
++
++	mutex_lock(&ts->input->mutex);
++
++	count = snprintf(buf, PAGE_SIZE, "%04X\n", ts->product_id);
++
++	mutex_unlock(&ts->input->mutex);
++
++	return count;
++}
++
++static DEVICE_ATTR(product_id, S_IRUGO, mip4_sysfs_read_product_id, NULL);
++
+ static ssize_t mip4_sysfs_read_ic_name(struct device *dev,
+ 					  struct device_attribute *attr,
+ 					  char *buf)
+@@ -1371,6 +1423,7 @@ static DEVICE_ATTR(ic_name, S_IRUGO, mip4_sysfs_read_ic_name, NULL);
+ static struct attribute *mip4_attrs[] = {
+ 	&dev_attr_fw_version.attr,
+ 	&dev_attr_hw_version.attr,
++	&dev_attr_product_id.attr,
+ 	&dev_attr_ic_name.attr,
+ 	&dev_attr_update_fw.attr,
+ 	NULL,
+@@ -1416,7 +1469,7 @@ static int mip4_probe(struct i2c_client *client, const struct i2c_device_id *id)
+ 					      "ce", GPIOD_OUT_LOW);
+ 	if (IS_ERR(ts->gpio_ce)) {
+ 		error = PTR_ERR(ts->gpio_ce);
+-		if (error != -EPROBE_DEFER)
++		if (error != EPROBE_DEFER)
+ 			dev_err(&client->dev,
+ 				"Failed to get gpio: %d\n", error);
+ 		return error;
+@@ -1435,6 +1488,7 @@ static int mip4_probe(struct i2c_client *client, const struct i2c_device_id *id)
+ 
+ 	input->id.bustype = BUS_I2C;
+ 	input->id.vendor = 0x13c5;
++	input->id.product = ts->product_id;
+ 
+ 	input->open = mip4_input_open;
+ 	input->close = mip4_input_close;
+@@ -1572,6 +1626,6 @@ static struct i2c_driver mip4_driver = {
+ module_i2c_driver(mip4_driver);
+ 
+ MODULE_DESCRIPTION("MELFAS MIP4 Touchscreen");
+-MODULE_VERSION("2016.09.28");
++MODULE_VERSION("2016.10.31");
+ MODULE_AUTHOR("Sangwon Jee <jeesw@melfas.com>");
+ MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

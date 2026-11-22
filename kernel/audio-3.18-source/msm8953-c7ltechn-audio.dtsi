@@ -1,0 +1,124 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * C7 (SM-C7000) 音频：RT5659 外部 codec + 三星机器驱动
+ * 源料：三星 3.18 arch/arm64/boot/dts/samsung/msm8953/msm8953-sec-c7lte_chn-r04.dts
+ *
+ * 两块内容：
+ *   1) rt5659@1b 挂在 BLSP2 QUP2（i2c_6，gpio22/23）。★ 4.9 的 msm8953.dtsi 里
+ *      **没有 i2c_6 这颗控制器**（只有 i2c_1/2/3/5），所以这里整颗补出来 ——
+ *      与之前补 spi_4 是同一类缺口。引脚状态 i2c_6_active/sleep 我们早就转换好了。
+ *   2) sound 节点用 &int_codec 覆盖：C7 的 compatible 是
+ *      "qcom,msm8952-rt5659-audio-codec"（4.9 默认是 WCD9335 的
+ *      "qcom,msm8952-audio-codec"），asoc-codec 改成 <&stub_codec> + <&audio_codec>。
+ *      4.9 已有的 asoc-platform / asoc-cpu 列表**保持不动**（那是 4.9 自己的 DAI
+ *      命名体系，照抄 3.18 反而会错）。
+ */
+
+&soc {
+	i2c_6: i2c@7af6000 { /* BLSP2 QUP2 —— C7 的 RT5659 在这条总线上 */
+		compatible = "qcom,i2c-msm-v2";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg-names = "qup_phys_addr";
+		reg = <0x7af6000 0x600>;
+		interrupt-names = "qup_irq";
+		interrupts = <0 300 0>;
+		qcom,clk-freq-out = <400000>;
+		qcom,clk-freq-in  = <19200000>;
+		clock-names = "iface_clk", "core_clk";
+		clocks = <&clock_gcc clk_gcc_blsp2_ahb_clk>,
+			<&clock_gcc clk_gcc_blsp2_qup2_i2c_apps_clk>;
+		pinctrl-names = "i2c_active", "i2c_sleep";
+		pinctrl-0 = <&i2c_6_active>;
+		pinctrl-1 = <&i2c_6_sleep>;
+		qcom,noise-rjct-scl = <0>;
+		qcom,noise-rjct-sda = <0>;
+		qcom,master-id = <84>;
+		dmas = <&dma_blsp2 6 64 0x20000020 0x20>,
+			<&dma_blsp2 7 32 0x20000020 0x20>;
+		dma-names = "tx", "rx";
+		status = "okay";
+
+		audio_codec: rt5659@1b {
+			compatible = "realtek,rt5659";
+			reg = <0x1b>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			pinctrl-names = "default", "sleep";
+			pinctrl-0 = <&rt5659_contorl_active &rt5659_irq_active>;
+			pinctrl-1 = <&rt5659_contorl_suspend &rt5659_irq_suspend>;
+
+			interrupts = <35 0>;
+			interrupt-parent = <&tlmm>;
+
+			realtek,in3-differential;
+			realtek,in4-differential;
+			realtek,noise-gate1-hp-enabled;
+
+			realtek,gpio_reset = <&tlmm 71 0x0>;
+			realtek,gpio_ldo = <&tlmm 74 0x00>;
+			realtek,gpio_3p3_en = <&tlmm 73 0x00>;
+			status = "okay";
+		};
+	};
+};
+
+&int_codec {
+	status = "okay";
+	compatible = "qcom,msm8952-rt5659-audio-codec";
+	qcom,model = "msm8952-rt5659-snd-card";
+	reg = <0xc051000 0x4>,
+	      <0xc051004 0x4>,
+	      <0xc055000 0x4>,
+	      <0xc056000 0x4>,
+	      <0xc052000 0x4>;
+	reg-names = "csr_gp_io_mux_mic_ctl",
+		    "csr_gp_io_mux_spkr_ctl",
+		    "csr_gp_io_lpaif_pri_pcm_pri_mode_muxsel",
+		    "csr_gp_io_lpaif_sec_pcm_sec_mode_muxsel",
+		    "csr_gp_io_mux_quin_ctl";
+
+	qcom,codec_irq_n = <&tlmm 35 0x0>;
+	qcom,mpp-channel-scaling = <2 1 1>;
+	qcom,earjack-read-vadc = <&pm8953_vadc>;
+	qcom,msm-ext-pa = "quinary";
+	qcom,msm-mclk-freq = <19200000>;
+	qcom,codec_ear_bias = <0>;
+	qcom,msm-hs-micbias-type = "External";
+	qcom,audio-routing =
+		"HP", "HPOL",
+		"HP", "HPOR",
+		"RCV", "MONOOUT",
+		"SPK", "SPOL",
+		"SPK", "SPOR",
+		"IN1P", "Headset Mic",
+		"IN1N", "Headset Mic",
+		"IN3P", "MICBIAS3",
+		"IN3P", "Sub Mic",
+		"IN3N", "Sub Mic",
+		"IN4P", "MICBIAS2",
+		"IN4P", "Main Mic",
+		"IN4N", "Main Mic";
+	qcom,msm-gpios = "quat_i2s", "quin_i2s";
+	qcom,pinctrl-names =
+		"all_off",
+		"quin_i2s_act",
+		"quat_i2s_act",
+		"quin_quat_i2s_act";
+	pinctrl-names =
+		"all_off",
+		"quin_i2s_act",
+		"quat_i2s_act",
+		"quin_quat_i2s_act";
+	pinctrl-0 = <&quin_tlmm_lines_sus &quin_tlmm_ws_lines_sus &gp_clk1_suspend>;
+	pinctrl-1 = <&quin_tlmm_lines_act &quin_tlmm_ws_lines_act &gp_clk1_active>;
+	pinctrl-2 = <&quin_tlmm_lines_act &quin_tlmm_ws_lines_act &gp_clk1_active>;
+	pinctrl-3 = <&quin_tlmm_lines_act &quin_tlmm_ws_lines_act &gp_clk1_active>;
+
+	/* 只换 codec：DSP 侧的 asoc-platform / asoc-cpu 用 4.9 自己的 */
+	asoc-codec = <&stub_codec>, <&audio_codec>;
+	asoc-codec-names = "msm-stub-codec.1", "rt5659";
+
+	clock-names = "ext-mclk";
+	clocks = <&clock_gcc clk_gcc_camss_gp1_clk>;
+};

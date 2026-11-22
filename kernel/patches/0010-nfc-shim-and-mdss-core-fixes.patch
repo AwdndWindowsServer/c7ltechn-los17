@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 13:29:18 +0000
+Subject: [PATCH] nfc/display: fix last two undefined symbols so the whole tree links
+
+让整树链接通过的最后一组修补（都是实测的 undefined reference）：
+
+  1. drivers/nfc/pn547_sec_shim.c（新增）
+     三星 pn547 NFC 驱动引用了 poweroff_charging（关机充电模式标志，定义在三星电池代码里），
+     AOSP 4.9 没有 → 给一个恒为 0 的定义：语义 = 当前不是关机充电模式，正常开机时的取值。
+
+  2. drivers/video/fbdev/msm/mdss_mdp.c
+     mdss_mdp_panel 在 4.9 里是 static，而 C7 面板驱动（三星栈）要跨文件引用它
+     → 去掉 static（与三星核心一致）。与补丁 0004/0007 里那两处 static/符号处理同源。
+
+  3. drivers/nfc/Makefile：挂上上面的 shim
+
+实测证据：
+  之前链接报
+    undefined reference to `mdss_mdp_panel'   (ss_dsi_panel_S6E3FA3_AMS598KH01.c:963)
+    undefined reference to `poweroff_charging' (pn547.c:1762)
+  修完后整树链接通过，产出：
+    LD vmlinux / OBJCOPY Image / GZIP Image.gz / CAT Image.gz-dtb   (EXIT=0, 12.0 MB)
+---
+diff --git a/drivers/nfc/Makefile b/drivers/nfc/Makefile
+index 3bc26f4..2291804 100644
+--- a/drivers/nfc/Makefile
++++ b/drivers/nfc/Makefile
+@@ -19,3 +19,4 @@ obj-$(CONFIG_NFC_S3FWRN5)	+= s3fwrn5/
+ obj-$(CONFIG_NFC_ST95HF)	+= st95hf/
+ obj-$(CONFIG_NFC_NQ)		+= nq-nci.o
+ obj-$(CONFIG_NFC_PN547_SAMSUNG)	+= pn547.o
++obj-$(CONFIG_NFC_PN547_SAMSUNG)	+= pn547_sec_shim.o
+diff --git a/drivers/nfc/pn547_sec_shim.c b/drivers/nfc/pn547_sec_shim.c
+new file mode 100644
+index 0000000..fddcf9a
+--- /dev/null
++++ b/drivers/nfc/pn547_sec_shim.c
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * pn547_sec_shim.c — C7ROM port shim
++ *
++ * 三星 pn547 NFC 驱动会读 poweroff_charging（关机充电模式标志，定义在三星的
++ * 电池/关机充电代码里）。AOSP 4.9 树里没有这套东西，这里给一个恒为 0 的定义：
++ * 语义 = "当前不是关机充电模式"，正是正常开机时的取值，因此 NFC 初始化会照常执行。
++ */
++#include <linux/module.h>
++int poweroff_charging;
++EXPORT_SYMBOL_GPL(poweroff_charging);
+diff --git a/drivers/video/fbdev/msm/mdss_mdp.c b/drivers/video/fbdev/msm/mdss_mdp.c
+index 48c32fa..aa78c61 100644
+--- a/drivers/video/fbdev/msm/mdss_mdp.c
++++ b/drivers/video/fbdev/msm/mdss_mdp.c
+@@ -100,7 +100,8 @@ static struct mdss_panel_intf pan_types[] = {
+ 	{"hdmi", MDSS_PANEL_INTF_HDMI},
+ 	{"spi", MDSS_PANEL_INTF_SPI},
+ };
+-static char mdss_mdp_panel[MDSS_MAX_PANEL_LEN];
++/* C7ROM: 三星面板驱动要跨文件引用，故去掉 static（与三星核心一致） */
++char mdss_mdp_panel[MDSS_MAX_PANEL_LEN];
+ 
+ struct mdss_hw mdss_mdp_hw = {
+ 	.hw_ndx = MDSS_HW_MDP,

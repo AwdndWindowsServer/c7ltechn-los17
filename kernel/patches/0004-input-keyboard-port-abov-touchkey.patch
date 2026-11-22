@@ -1,0 +1,2820 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 07:24:25 +0000
+Subject: [PATCH] input: keyboard: port Samsung ABOV MC96FT16xx touchkey driver to 4.9
+
+把三星 3.18 的 ABOV MC96FT16xx 触摸键驱动移植到 Linux 4.9（C7 用，I2C 地址 0x20）。
+
+移植内容：
+  + drivers/input/keyboard/abov_touchkey_16xx.c   三星驱动本体（原样搬，仅补 shim 依赖）
+  + drivers/input/keyboard/abov_touchkey_sec.c    sec_class / sec_device_create 的最小实现
+  + include/linux/sec_class.h                     三星私有头 shim（sec_class / SECLOG /
+                                                  input_err,info,dbg / KEY_RECENT）
+  + include/linux/async_initcall.h                module_init_async -> module_init
+  ~ drivers/input/keyboard/Kconfig                新增 KEYBOARD_ABOV_TOUCH_16XX
+  ~ drivers/input/keyboard/Makefile               新增两个 obj + 按文件关掉 bool-compare 警告
+  + arch/arm64/configs/c7ltechn_defconfig         = mido_defconfig + C7 已落地驱动（当前就这一项）
+
+为什么需要 shim（都是实测编不过才补的）：
+  1. include/linux/sec_class.h   —— 三星私有，AOSP 没有；且驱动后面会
+     sysfs_create_group(&sec_touchkey->kobj, ...)，所以 sec_device_create 必须返回**有效指针**
+     （不能简单返回 NULL/错误），故用一个 subsys_initcall 建 class + device_create 实现
+  2. SECLOG / input_err / input_info / input_dbg / KEY_RECENT —— 三星塞在自家
+     include/linux/input.h 与 input-event-codes.h 里的宏，AOSP 4.9 没有（按调用语义重实现）
+  3. module_init_async -> module_init（同步注册，行为等价）
+  4. reverse_key < 0 在 4.9 会触发 -Werror=bool-compare（bool 永远 >= 0），按文件关掉该警告
+  5. CONFIG_INPUT_BOOSTER / CONFIG_TOUCHSCREEN_DUMP_MODE 相关的三星依赖**本来就是条件编译**，
+     不打开这两个 config 就自动不参与编译，无需改动
+
+实测结果（Linux 4.9.337 树 + aarch64-linux-gnu- 交叉工具链）：
+  CC  drivers/input/keyboard/abov_touchkey_16xx.o   (249776 bytes)
+  CC  drivers/input/keyboard/abov_touchkey_sec.o    (124912 bytes)
+  LD  drivers/input/keyboard/built-in.o             链接通过
+
+DTS 侧配套（已在补丁 0003）：i2c@23 (i2c-gpio, sda=gpio16/scl=gpio17) -> mc96ft16xx@20，
+compatible "abov,mc96ft16xx" 与驱动 of_device_id 完全一致。
+---
+diff --git a/arch/arm64/configs/c7ltechn_defconfig b/arch/arm64/configs/c7ltechn_defconfig
+new file mode 100644
+index 0000000..a544a47
+--- /dev/null
++++ b/arch/arm64/configs/c7ltechn_defconfig
+@@ -0,0 +1,716 @@
++CONFIG_LOCALVERSION="-perf"
++# CONFIG_FHANDLE is not set
++CONFIG_AUDIT=y
++# CONFIG_AUDITSYSCALL is not set
++CONFIG_NO_HZ=y
++CONFIG_HIGH_RES_TIMERS=y
++CONFIG_IRQ_TIME_ACCOUNTING=y
++CONFIG_SCHED_DEBUG=y
++CONFIG_SCHED_WALT=y
++CONFIG_TASKSTATS=y
++CONFIG_TASK_DELAY_ACCT=y
++CONFIG_TASK_XACCT=y
++CONFIG_TASK_IO_ACCOUNTING=y
++CONFIG_PSI=y
++CONFIG_RCU_EXPERT=y
++CONFIG_RCU_FAST_NO_HZ=y
++CONFIG_RCU_NOCB_CPU=y
++CONFIG_RCU_NOCB_CPU_ALL=y
++CONFIG_IKCONFIG=y
++CONFIG_IKCONFIG_PROC=y
++CONFIG_LOG_CPU_MAX_BUF_SHIFT=17
++CONFIG_PELT_UTIL_HALFLIFE_16=y
++CONFIG_MEMCG=y
++CONFIG_MEMCG_SWAP=y
++CONFIG_BLK_CGROUP=y
++CONFIG_RT_GROUP_SCHED=y
++CONFIG_CGROUP_FREEZER=y
++CONFIG_CPUSETS=y
++CONFIG_CGROUP_CPUACCT=y
++CONFIG_CGROUP_BPF=y
++CONFIG_SCHED_CORE_CTL=y
++CONFIG_NAMESPACES=y
++CONFIG_OPTIMIZE_INLINING=y
++# CONFIG_UTS_NS is not set
++# CONFIG_PID_NS is not set
++CONFIG_SCHED_AUTOGROUP=y
++CONFIG_SCHED_TUNE=y
++CONFIG_DEFAULT_USE_ENERGY_AWARE=y
++CONFIG_BLK_DEV_INITRD=y
++CONFIG_INITRAMFS_IGNORE_SKIP_FLAG=y
++# CONFIG_RD_BZIP2 is not set
++# CONFIG_RD_LZMA is not set
++# CONFIG_RD_XZ is not set
++# CONFIG_RD_LZO is not set
++# CONFIG_RD_LZ4 is not set
++CONFIG_BPF_SYSCALL=y
++CONFIG_EMBEDDED=y
++# CONFIG_COMPAT_BRK is not set
++CONFIG_PROFILING=y
++CONFIG_KPROBES=y
++CONFIG_CC_STACKPROTECTOR_STRONG=y
++CONFIG_ARCH_MMAP_RND_COMPAT_BITS=16
++CONFIG_MODULES=y
++CONFIG_MODULE_UNLOAD=y
++CONFIG_MODVERSIONS=y
++CONFIG_MODULE_SIG=y
++CONFIG_MODULE_SIG_FORCE=y
++CONFIG_MODULE_SIG_SHA512=y
++# CONFIG_BLK_DEV_BSG is not set
++CONFIG_PARTITION_ADVANCED=y
++# CONFIG_IOSCHED_DEADLINE is not set
++CONFIG_CFQ_GROUP_IOSCHED=y
++CONFIG_IOSCHED_BFQ=y
++CONFIG_BFQ_GROUP_IOSCHED=y
++CONFIG_DEFAULT_BFQ=y
++CONFIG_MACH_XIAOMI=y
++CONFIG_MACH_XIAOMI_C6=y
++# CONFIG_ARM64_ERRATUM_826319 is not set
++# CONFIG_ARM64_ERRATUM_827319 is not set
++# CONFIG_ARM64_ERRATUM_824069 is not set
++# CONFIG_ARM64_ERRATUM_819472 is not set
++# CONFIG_ARM64_ERRATUM_832075 is not set
++# CONFIG_ARM64_ERRATUM_1024718 is not set
++# CONFIG_CAVIUM_ERRATUM_22375 is not set
++# CONFIG_CAVIUM_ERRATUM_23154 is not set
++# CONFIG_CAVIUM_ERRATUM_27456 is not set
++# CONFIG_QCOM_QDF2400_ERRATUM_0065 is not set
++CONFIG_SCHED_MC=y
++CONFIG_NR_CPUS=8
++CONFIG_LITTLE_CPU_MASK=240
++CONFIG_BIG_CPU_MASK=15
++CONFIG_PREEMPT=y
++# CONFIG_HZ_100 is not set
++# CONFIG_HZ_250 is not set
++CONFIG_HZ_300=y
++# CONFIG_HZ_1000 is not set
++CONFIG_HZ=300
++CONFIG_CMA=y
++CONFIG_ZSMALLOC=y
++CONFIG_PGTABLE_MAPPING=y
++CONFIG_PROCESS_RECLAIM=y
++CONFIG_SECCOMP=y
++CONFIG_HARDEN_BRANCH_PREDICTOR=y
++CONFIG_PSCI_BP_HARDENING=y
++CONFIG_ARMV8_DEPRECATED=y
++CONFIG_SWP_EMULATION=y
++CONFIG_CP15_BARRIER_EMULATION=y
++CONFIG_SETEND_EMULATION=y
++CONFIG_ARM64_SW_TTBR0_PAN=y
++# CONFIG_ARM64_HW_AFDBM is not set
++# CONFIG_ARM64_PAN is not set
++# CONFIG_ARM64_VHE is not set
++# CONFIG_ARM64_UAO is not set
++CONFIG_RANDOMIZE_BASE=y
++# CONFIG_EFI is not set
++CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
++# CONFIG_CORE_DUMP_DEFAULT_ELF_HEADERS is not set
++CONFIG_COMPAT=y
++CONFIG_COMPAT_VDSO=y
++CONFIG_SUSPEND_SKIP_SYNC=y
++# CONFIG_PM_AUTOSLEEP is not set
++CONFIG_PM_WAKELOCKS=y
++CONFIG_PM_WAKELOCKS_LIMIT=0
++# CONFIG_PM_WAKELOCKS_GC is not set
++# CONFIG_WQ_POWER_EFFICIENT_DEFAULT is not set
++CONFIG_CPU_IDLE=y
++CONFIG_CPU_FREQ=y
++CONFIG_CPU_FREQ_STAT=y
++CONFIG_CPU_FREQ_GOV_POWERSAVE=y
++CONFIG_CPU_FREQ_GOV_USERSPACE=y
++CONFIG_CPU_FREQ_GOV_ONDEMAND=y
++CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y
++CONFIG_CPU_BOOST=y
++CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
++CONFIG_CPU_FREQ_MSM=y
++CONFIG_NET=y
++CONFIG_PACKET=y
++CONFIG_UNIX=y
++CONFIG_XFRM_USER=y
++CONFIG_XFRM_INTERFACE=y
++CONFIG_XFRM_STATISTICS=y
++CONFIG_NET_KEY=y
++CONFIG_INET=y
++CONFIG_WIREGUARD=y
++CONFIG_IP_MULTICAST=y
++CONFIG_IP_ADVANCED_ROUTER=y
++CONFIG_IP_MULTIPLE_TABLES=y
++CONFIG_IP_ROUTE_VERBOSE=y
++CONFIG_IP_PNP=y
++CONFIG_IP_PNP_DHCP=y
++CONFIG_NET_IPGRE_DEMUX=y
++CONFIG_NET_IPVTI=y
++CONFIG_INET_AH=y
++CONFIG_INET_ESP=y
++CONFIG_INET_IPCOMP=y
++CONFIG_INET_UDP_DIAG=y
++CONFIG_INET_DIAG_DESTROY=y
++CONFIG_TCP_CONG_ADVANCED=y
++# CONFIG_TCP_CONG_BIC is not set
++CONFIG_TCP_CONG_WESTWOOD=y
++# CONFIG_TCP_CONG_HTCP is not set
++CONFIG_TCP_CONG_BBR=y
++CONFIG_DEFAULT_BBR=y
++CONFIG_IPV6_ROUTER_PREF=y
++CONFIG_IPV6_ROUTE_INFO=y
++CONFIG_IPV6_OPTIMISTIC_DAD=y
++CONFIG_INET6_AH=y
++CONFIG_INET6_ESP=y
++CONFIG_INET6_IPCOMP=y
++CONFIG_IPV6_MIP6=y
++CONFIG_IPV6_VTI=y
++CONFIG_IPV6_MULTIPLE_TABLES=y
++CONFIG_IPV6_SUBTREES=y
++CONFIG_NETFILTER=y
++CONFIG_BRIDGE_NETFILTER=y
++CONFIG_NF_CONNTRACK=y
++CONFIG_NF_CONNTRACK_SECMARK=y
++CONFIG_NF_CONNTRACK_EVENTS=y
++CONFIG_NF_CT_PROTO_DCCP=y
++CONFIG_NF_CT_PROTO_SCTP=y
++CONFIG_NF_CT_PROTO_UDPLITE=y
++CONFIG_NF_CONNTRACK_AMANDA=y
++CONFIG_NF_CONNTRACK_FTP=y
++CONFIG_NF_CONNTRACK_H323=y
++CONFIG_NF_CONNTRACK_IRC=y
++CONFIG_NF_CONNTRACK_NETBIOS_NS=y
++CONFIG_NF_CONNTRACK_PPTP=y
++CONFIG_NF_CONNTRACK_SANE=y
++CONFIG_NF_CONNTRACK_TFTP=y
++CONFIG_NF_CT_NETLINK=y
++CONFIG_NETFILTER_XT_TARGET_CLASSIFY=y
++CONFIG_NETFILTER_XT_TARGET_CONNMARK=y
++CONFIG_NETFILTER_XT_TARGET_CONNSECMARK=y
++CONFIG_NETFILTER_XT_TARGET_IDLETIMER=y
++CONFIG_NETFILTER_XT_TARGET_HARDIDLETIMER=y
++CONFIG_NETFILTER_XT_TARGET_LOG=y
++CONFIG_NETFILTER_XT_TARGET_MARK=y
++CONFIG_NETFILTER_XT_TARGET_NFLOG=y
++CONFIG_NETFILTER_XT_TARGET_NFQUEUE=y
++CONFIG_NETFILTER_XT_TARGET_NOTRACK=y
++CONFIG_NETFILTER_XT_TARGET_TEE=y
++CONFIG_NETFILTER_XT_TARGET_TPROXY=y
++CONFIG_NETFILTER_XT_TARGET_TRACE=y
++CONFIG_NETFILTER_XT_TARGET_SECMARK=y
++CONFIG_NETFILTER_XT_TARGET_TCPMSS=y
++CONFIG_NETFILTER_XT_MATCH_BPF=y
++CONFIG_NETFILTER_XT_MATCH_COMMENT=y
++CONFIG_NETFILTER_XT_MATCH_CONNLIMIT=y
++CONFIG_NETFILTER_XT_MATCH_CONNMARK=y
++CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
++CONFIG_NETFILTER_XT_MATCH_DSCP=y
++CONFIG_NETFILTER_XT_MATCH_ESP=y
++CONFIG_NETFILTER_XT_MATCH_HASHLIMIT=y
++CONFIG_NETFILTER_XT_MATCH_HELPER=y
++CONFIG_NETFILTER_XT_MATCH_IPRANGE=y
++# CONFIG_NETFILTER_XT_MATCH_L2TP is not set
++CONFIG_NETFILTER_XT_MATCH_LENGTH=y
++CONFIG_NETFILTER_XT_MATCH_LIMIT=y
++CONFIG_NETFILTER_XT_MATCH_MAC=y
++CONFIG_NETFILTER_XT_MATCH_MARK=y
++CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y
++CONFIG_NETFILTER_XT_MATCH_OWNER=y
++CONFIG_NETFILTER_XT_MATCH_POLICY=y
++CONFIG_NETFILTER_XT_MATCH_PKTTYPE=y
++CONFIG_NETFILTER_XT_MATCH_QUOTA=y
++CONFIG_NETFILTER_XT_MATCH_QUOTA2=y
++CONFIG_NETFILTER_XT_MATCH_SOCKET=y
++CONFIG_NETFILTER_XT_MATCH_STATE=y
++CONFIG_NETFILTER_XT_MATCH_STATISTIC=y
++CONFIG_NETFILTER_XT_MATCH_STRING=y
++CONFIG_NETFILTER_XT_MATCH_TIME=y
++CONFIG_NETFILTER_XT_MATCH_U32=y
++CONFIG_NF_CONNTRACK_IPV4=y
++CONFIG_IP_NF_IPTABLES=y
++CONFIG_IP_NF_MATCH_AH=y
++CONFIG_IP_NF_MATCH_ECN=y
++CONFIG_IP_NF_MATCH_RPFILTER=y
++CONFIG_IP_NF_MATCH_TTL=y
++CONFIG_IP_NF_FILTER=y
++CONFIG_IP_NF_TARGET_REJECT=y
++CONFIG_IP_NF_NAT=y
++CONFIG_IP_NF_TARGET_MASQUERADE=y
++CONFIG_IP_NF_TARGET_NETMAP=y
++CONFIG_IP_NF_TARGET_REDIRECT=y
++CONFIG_IP_NF_MANGLE=y
++CONFIG_IP_NF_RAW=y
++CONFIG_IP_NF_SECURITY=y
++CONFIG_IP_NF_ARPTABLES=y
++CONFIG_IP_NF_ARPFILTER=y
++CONFIG_IP_NF_ARP_MANGLE=y
++CONFIG_NF_CONNTRACK_IPV6=y
++CONFIG_IP6_NF_IPTABLES=y
++CONFIG_IP6_NF_MATCH_RPFILTER=y
++CONFIG_IP6_NF_FILTER=y
++CONFIG_IP6_NF_TARGET_REJECT=y
++CONFIG_IP6_NF_MANGLE=y
++CONFIG_IP6_NF_RAW=y
++CONFIG_BRIDGE_NF_EBTABLES=y
++CONFIG_BRIDGE_EBT_BROUTE=y
++CONFIG_L2TP=y
++CONFIG_L2TP_V3=y
++CONFIG_L2TP_IP=y
++CONFIG_L2TP_ETH=y
++CONFIG_BRIDGE=y
++CONFIG_NET_SCHED=y
++CONFIG_NET_SCH_HTB=y
++CONFIG_NET_SCH_PRIO=y
++CONFIG_NET_SCH_FQ_CODEL=y
++CONFIG_NET_SCH_INGRESS=y
++CONFIG_NET_SCH_DEFAULT=y
++CONFIG_DEFAULT_FQ_CODEL=y
++CONFIG_NET_CLS_FW=y
++CONFIG_NET_CLS_U32=y
++CONFIG_CLS_U32_MARK=y
++CONFIG_NET_CLS_FLOW=y
++CONFIG_NET_CLS_BPF=y
++CONFIG_NET_EMATCH=y
++CONFIG_NET_EMATCH_CMP=y
++CONFIG_NET_EMATCH_NBYTE=y
++CONFIG_NET_EMATCH_U32=y
++CONFIG_NET_EMATCH_META=y
++CONFIG_NET_EMATCH_TEXT=y
++CONFIG_NET_CLS_ACT=y
++CONFIG_RMNET_DATA=y
++CONFIG_RMNET_DATA_FC=y
++CONFIG_BT=y
++# CONFIG_BT_BREDR is not set
++# CONFIG_BT_LE is not set
++CONFIG_MSM_BT_POWER=y
++CONFIG_CFG80211=y
++CONFIG_CFG80211_CERTIFICATION_ONUS=y
++CONFIG_CFG80211_REG_CELLULAR_HINTS=y
++CONFIG_CFG80211_INTERNAL_REGDB=y
++# CONFIG_CFG80211_CRDA_SUPPORT is not set
++CONFIG_RFKILL=y
++CONFIG_IPC_ROUTER=y
++CONFIG_IPC_ROUTER_SECURITY=y
++CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
++CONFIG_DMA_CMA=y
++CONFIG_ZRAM=y
++CONFIG_ZRAM_DEDUP=y
++CONFIG_ZRAM_DEFAULT_COMP_ALGORITHM="lz4"
++CONFIG_BLK_DEV_LOOP=y
++CONFIG_BLK_DEV_LOOP_MIN_COUNT=16
++CONFIG_BLK_DEV_RAM=y
++CONFIG_BLK_DEV_RAM_SIZE=8192
++CONFIG_HDCP_QSEECOM=y
++CONFIG_QSEECOM=y
++CONFIG_UID_SYS_STATS=y
++CONFIG_SCSI=y
++CONFIG_BLK_DEV_SD=y
++CONFIG_CHR_DEV_SG=y
++CONFIG_CHR_DEV_SCH=y
++CONFIG_SCSI_CONSTANTS=y
++CONFIG_SCSI_LOGGING=y
++CONFIG_SCSI_SCAN_ASYNC=y
++CONFIG_MD=y
++CONFIG_BLK_DEV_DM=y
++CONFIG_DM_CRYPT=y
++CONFIG_DM_REQ_CRYPT=y
++CONFIG_DM_DEFAULT_KEY=y
++CONFIG_DM_UEVENT=y
++CONFIG_DM_VERITY=y
++CONFIG_DM_VERITY_FEC=y
++CONFIG_DM_VERITY_HASH_PREFETCH_MIN_SIZE_128=y
++CONFIG_DM_BOW=y
++CONFIG_NETDEVICES=y
++CONFIG_DUMMY=y
++CONFIG_TUN=y
++# CONFIG_NET_VENDOR_AMAZON is not set
++# CONFIG_NET_CADENCE is not set
++# CONFIG_NET_VENDOR_HISILICON is not set
++# CONFIG_NET_VENDOR_MARVELL is not set
++# CONFIG_NET_VENDOR_NETRONOME is not set
++# CONFIG_NET_VENDOR_ROCKER is not set
++# CONFIG_NET_VENDOR_SYNOPSYS is not set
++CONFIG_PPP=y
++CONFIG_PPP_BSDCOMP=y
++CONFIG_PPP_DEFLATE=y
++CONFIG_PPP_FILTER=y
++CONFIG_PPP_MPPE=y
++CONFIG_PPP_MULTILINK=y
++CONFIG_PPPOE=y
++CONFIG_PPTP=y
++CONFIG_PPPOL2TP=y
++CONFIG_PPPOLAC=y
++CONFIG_PPPOPNS=y
++CONFIG_PPP_ASYNC=y
++CONFIG_PPP_SYNC_TTY=y
++CONFIG_USB_RTL8152=y
++CONFIG_USB_USBNET=y
++# CONFIG_WLAN_VENDOR_ADMTEK is not set
++# CONFIG_WLAN_VENDOR_ATH is not set
++# CONFIG_WLAN_VENDOR_ATMEL is not set
++# CONFIG_WLAN_VENDOR_BROADCOM is not set
++# CONFIG_WLAN_VENDOR_CISCO is not set
++# CONFIG_WLAN_VENDOR_INTEL is not set
++# CONFIG_WLAN_VENDOR_INTERSIL is not set
++# CONFIG_WLAN_VENDOR_MARVELL is not set
++# CONFIG_WLAN_VENDOR_MEDIATEK is not set
++# CONFIG_WLAN_VENDOR_RALINK is not set
++# CONFIG_WLAN_VENDOR_REALTEK is not set
++# CONFIG_WLAN_VENDOR_RSI is not set
++# CONFIG_WLAN_VENDOR_ST is not set
++# CONFIG_WLAN_VENDOR_TI is not set
++# CONFIG_WLAN_VENDOR_ZYDAS is not set
++CONFIG_WCNSS_MEM_PRE_ALLOC=y
++CONFIG_CLD_LL_CORE=y
++CONFIG_CNSS_GENL=y
++CONFIG_INPUT_EVDEV=y
++CONFIG_KEYBOARD_GPIO=y
++# CONFIG_INPUT_MOUSE is not set
++CONFIG_INPUT_JOYSTICK=y
++CONFIG_JOYSTICK_XPAD=y
++CONFIG_JOYSTICK_XPAD_FF=y
++CONFIG_JOYSTICK_XPAD_LEDS=y
++CONFIG_INPUT_TOUCHSCREEN=y
++# CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_v26 is not set
++# CONFIG_TOUCHSCREEN_SYNAPTICS_DSX is not set
++CONFIG_TOUCHSCREEN_FT5435=y
++CONFIG_TOUCHSCREEN_IST3038C=y
++CONFIG_TOUCHSCREEN_GT9XX_v24=y
++CONFIG_TOUCHSCREEN_GT9XX_v24_UPDATE=y
++CONFIG_TOUCHSCREEN_GT9XX_v24_TOOL=y
++CONFIG_INPUT_MISC=y
++# CONFIG_INPUT_HBTP_INPUT is not set
++CONFIG_INPUT_QPNP_POWER_ON=y
++CONFIG_INPUT_QTI_HAPTICS=y
++CONFIG_INPUT_UINPUT=y
++CONFIG_INPUT_FINGERPRINT=y
++CONFIG_FINGERPRINT_GOODIX_GF3208_C6=y
++CONFIG_FINGERPRINT_FPC1020_C6=y
++# CONFIG_SERIO_SERPORT is not set
++# CONFIG_VT is not set
++# CONFIG_LEGACY_PTYS is not set
++# CONFIG_DEVMEM is not set
++# CONFIG_DEVKMEM is not set
++CONFIG_SERIAL_MSM_HS=y
++CONFIG_SERIAL_MSM_SMD=y
++CONFIG_HW_RANDOM=y
++CONFIG_HW_RANDOM_MSM_LEGACY=y
++CONFIG_MSM_SMD_PKT=y
++# CONFIG_RANDOM_TRUST_BOOTLOADER is not set
++CONFIG_MSM_ADSPRPC=y
++CONFIG_I2C_CHARDEV=y
++CONFIG_I2C_MSM_V2=y
++CONFIG_SPI=y
++CONFIG_SPI_QUP=y
++CONFIG_SLIMBUS_MSM_NGD=y
++CONFIG_SPMI=y
++CONFIG_PINCTRL_MSM8953=y
++CONFIG_PINCTRL_QCOM_SPMI_PMIC=y
++CONFIG_GPIOLIB=y
++CONFIG_GPIO_SYSFS=y
++CONFIG_GPIO_QPNP_PIN=y
++CONFIG_POWER_RESET_QCOM=y
++CONFIG_QCOM_PRESERVE_MEM=y
++CONFIG_QPNP_FG=y
++CONFIG_QPNP_SMBCHARGER=y
++CONFIG_QPNP_QG=y
++CONFIG_MSM_APM=y
++CONFIG_SENSORS_QPNP_ADC_VOLTAGE=y
++CONFIG_THERMAL=y
++CONFIG_MSM_BCL_PERIPHERAL_CTL_LEGACY=y
++CONFIG_THERMAL_WRITABLE_TRIPS=y
++CONFIG_THERMAL_GOV_USER_SPACE=y
++CONFIG_THERMAL_GOV_LOW_LIMITS=y
++CONFIG_CPU_THERMAL=y
++CONFIG_DEVFREQ_THERMAL=y
++CONFIG_THERMAL_QPNP=y
++CONFIG_THERMAL_QPNP_ADC_TM=y
++CONFIG_THERMAL_TSENS=y
++CONFIG_QTI_VIRTUAL_SENSOR=y
++CONFIG_QTI_QMI_COOLING_DEVICE=y
++CONFIG_REGULATOR_COOLING_DEVICE=y
++CONFIG_QTI_BCL_PMIC5=y
++CONFIG_QTI_BCL_SOC_DRIVER=y
++CONFIG_MFD_I2C_PMIC=y
++CONFIG_MFD_SPMI_PMIC=y
++CONFIG_MFD_SYSCON=y
++CONFIG_REGULATOR=y
++CONFIG_REGULATOR_FIXED_VOLTAGE=y
++CONFIG_REGULATOR_CPR=y
++CONFIG_REGULATOR_CPR4_APSS=y
++CONFIG_REGULATOR_CPRH_KBSS=y
++CONFIG_REGULATOR_MEM_ACC=y
++CONFIG_REGULATOR_MSM_GFX_LDO=y
++CONFIG_REGULATOR_QPNP_LABIBB=y
++CONFIG_REGULATOR_QPNP_LCDB=y
++CONFIG_REGULATOR_QPNP=y
++CONFIG_REGULATOR_RPM_SMD=y
++CONFIG_REGULATOR_SPM=y
++CONFIG_REGULATOR_STUB=y
++CONFIG_MEDIA_SUPPORT=y
++CONFIG_MEDIA_CAMERA_SUPPORT=y
++CONFIG_MEDIA_DIGITAL_TV_SUPPORT=y
++CONFIG_MEDIA_RC_SUPPORT=y
++CONFIG_MEDIA_CONTROLLER=y
++CONFIG_VIDEO_V4L2_SUBDEV_API=y
++CONFIG_LIRC=y
++# CONFIG_IR_MCE_KBD_DECODER is not set
++CONFIG_RC_DEVICES=y
++CONFIG_IR_PWM=y
++CONFIG_V4L_PLATFORM_DRIVERS=y
++CONFIG_MSMB_CAMERA=y
++CONFIG_MSMB_CAMERA_LEGACY=y
++CONFIG_MSM_CAMERA_SENSOR=y
++CONFIG_MSM_CPP=y
++CONFIG_MSM_CCI=y
++CONFIG_MSM_CSI20_HEADER=y
++CONFIG_MSM_CSI22_HEADER=y
++CONFIG_MSM_CSI30_HEADER=y
++CONFIG_MSM_CSI31_HEADER=y
++CONFIG_MSM_CSIPHY=y
++CONFIG_MSM_CSID=y
++CONFIG_MSM_EEPROM=y
++CONFIG_MSM_ISPIF=y
++CONFIG_MSM_V4L2_VIDEO_OVERLAY_DEVICE=y
++CONFIG_MSMB_JPEG=y
++CONFIG_MSM_FD=y
++CONFIG_MSM_VIDC_3X_V4L2=y
++CONFIG_MSM_VIDC_3X_GOVERNORS=y
++CONFIG_MSM_SDE_ROTATOR=y
++CONFIG_RADIO_IRIS=y
++CONFIG_RADIO_IRIS_TRANSPORT=y
++CONFIG_QCOM_KGSL=y
++CONFIG_FB=y
++CONFIG_FB_MSM=y
++CONFIG_FB_MSM_MDSS=y
++CONFIG_FB_MSM_MDSS_WRITEBACK=y
++CONFIG_FB_MSM_MDSS_DSI_CTRL_STATUS=y
++CONFIG_FB_MSM_MDSS_KCAL_CTRL=y
++CONFIG_BACKLIGHT_LCD_SUPPORT=y
++# CONFIG_LCD_CLASS_DEVICE is not set
++# CONFIG_BACKLIGHT_CLASS_DEVICE is not set
++CONFIG_SOUND=y
++CONFIG_SND=y
++CONFIG_SND_DYNAMIC_MINORS=y
++CONFIG_SND_USB_AUDIO=y
++CONFIG_SND_SOC=y
++CONFIG_UHID=y
++CONFIG_HID_APPLE=y
++CONFIG_HID_ELECOM=y
++CONFIG_HID_MAGICMOUSE=y
++CONFIG_HID_MICROSOFT=y
++CONFIG_HID_MULTITOUCH=y
++CONFIG_HID_SONY=y
++CONFIG_USB_HIDDEV=y
++CONFIG_USB_ANNOUNCE_NEW_DEVICES=y
++CONFIG_USB_MON=y
++CONFIG_USB_XHCI_HCD=y
++CONFIG_USB_EHCI_HCD=y
++CONFIG_USB_EHCI_MSM=y
++CONFIG_USB_EHCI_HCD_PLATFORM=y
++CONFIG_USB_ACM=y
++CONFIG_USB_STORAGE=y
++CONFIG_USB_STORAGE_DATAFAB=y
++CONFIG_USB_STORAGE_FREECOM=y
++CONFIG_USB_STORAGE_ISD200=y
++CONFIG_USB_STORAGE_USBAT=y
++CONFIG_USB_STORAGE_SDDR09=y
++CONFIG_USB_STORAGE_SDDR55=y
++CONFIG_USB_STORAGE_JUMPSHOT=y
++CONFIG_USB_STORAGE_ALAUDA=y
++CONFIG_USB_STORAGE_ONETOUCH=y
++CONFIG_USB_STORAGE_KARMA=y
++CONFIG_USB_STORAGE_CYPRESS_ATACB=y
++CONFIG_USB_DWC3=y
++CONFIG_USB_DWC3_MSM=y
++CONFIG_USB_SERIAL=y
++CONFIG_USB_EHSET_TEST_FIXTURE=y
++CONFIG_USB_LINK_LAYER_TEST=y
++CONFIG_NOP_USB_XCEIV=y
++CONFIG_DUAL_ROLE_USB_INTF=y
++CONFIG_USB_MSM_SSPHY_QMP=y
++CONFIG_MSM_QUSB_PHY=y
++CONFIG_USB_GADGET=y
++CONFIG_USB_GADGET_VBUS_DRAW=500
++CONFIG_USB_CI13XXX_MSM=y
++CONFIG_USB_CONFIGFS=y
++CONFIG_USB_CONFIGFS_SERIAL=y
++CONFIG_USB_CONFIGFS_NCM=y
++CONFIG_USB_CONFIGFS_QCRNDIS=y
++CONFIG_USB_CONFIGFS_RNDIS=y
++CONFIG_USB_CONFIGFS_RMNET_BAM=y
++CONFIG_USB_CONFIGFS_MASS_STORAGE=y
++CONFIG_USB_CONFIGFS_F_FS=y
++CONFIG_USB_CONFIGFS_F_MTP=y
++CONFIG_USB_CONFIGFS_F_PTP=y
++CONFIG_USB_CONFIGFS_F_ACC=y
++CONFIG_USB_CONFIGFS_F_AUDIO_SRC=y
++CONFIG_USB_CONFIGFS_UEVENT=y
++CONFIG_USB_CONFIGFS_F_MIDI=y
++CONFIG_USB_CONFIGFS_F_HID=y
++CONFIG_USB_CONFIGFS_F_DIAG=y
++CONFIG_USB_CONFIGFS_F_CDEV=y
++CONFIG_USB_CONFIGFS_F_CCID=y
++CONFIG_USB_CONFIGFS_F_QDSS=y
++CONFIG_USB_CONFIGFS_F_UVC=y
++CONFIG_MMC=y
++# CONFIG_MMC_PERF_PROFILING is not set
++# CONFIG_PWRSEQ_EMMC is not set
++# CONFIG_PWRSEQ_SIMPLE is not set
++CONFIG_MMC_PARANOID_SD_INIT=y
++CONFIG_MMC_CLKGATE=y
++CONFIG_MMC_BLOCK_MINORS=32
++CONFIG_MMC_BLOCK_DEFERRED_RESUME=y
++CONFIG_MMC_SDHCI=y
++CONFIG_MMC_SDHCI_PLTFM=y
++CONFIG_MMC_SDHCI_MSM=y
++CONFIG_MMC_CQ_HCI=y
++CONFIG_LEDS_QPNP=y
++CONFIG_LEDS_QPNP_FLASH=y
++CONFIG_LEDS_QPNP_WLED=y
++CONFIG_LEDS_AW2013=y
++CONFIG_LEDS_TRIGGERS=y
++CONFIG_LEDS_TRIGGER_TIMER=y
++CONFIG_RTC_CLASS=y
++CONFIG_RTC_DRV_QPNP=y
++CONFIG_DMADEVICES=y
++CONFIG_QCOM_SPS_DMA=y
++CONFIG_UIO=y
++CONFIG_UIO_MSM_SHAREDMEM=y
++CONFIG_STAGING=y
++CONFIG_ASHMEM=y
++CONFIG_ION=y
++CONFIG_ION_MSM=y
++CONFIG_ALLOC_BUFFERS_IN_4K_CHUNKS=y
++CONFIG_PRONTO_WLAN=y
++CONFIG_IPA=y
++CONFIG_RMNET_IPA=y
++CONFIG_RNDIS_IPA=y
++CONFIG_SPS=y
++CONFIG_SPS_SUPPORT_NDP_BAM=y
++CONFIG_QPNP_COINCELL=y
++CONFIG_QPNP_REVID=y
++CONFIG_USB_BAM=y
++CONFIG_MSM_EXT_DISPLAY=y
++CONFIG_MSM_RMNET_BAM=y
++CONFIG_MSM_MDSS_PLL=y
++CONFIG_REMOTE_SPINLOCK_MSM=y
++CONFIG_ARM_ARCH_TIMER_VCT_ACCESS=y
++CONFIG_MSM_TIMER_LEAP=y
++CONFIG_MAILBOX=y
++CONFIG_ARM_SMMU=y
++CONFIG_QCOM_LAZY_MAPPING=y
++CONFIG_QCOM_RUN_QUEUE_STATS=y
++CONFIG_MSM_SPM=y
++CONFIG_MSM_L2_SPM=y
++CONFIG_QCOM_SCM=y
++CONFIG_MSM_BOOT_STATS=y
++CONFIG_QCOM_WATCHDOG_V2=y
++CONFIG_QPNP_PBS=y
++CONFIG_MSM_RPM_SMD=y
++CONFIG_QCOM_BUS_SCALING=y
++CONFIG_QCOM_SECURE_BUFFER=y
++CONFIG_QCOM_EARLY_RANDOM=y
++CONFIG_MSM_SMEM=y
++CONFIG_MSM_SMD=y
++CONFIG_MSM_TZ_SMMU=y
++CONFIG_MSM_SMP2P=y
++CONFIG_MSM_IPC_ROUTER_SMD_XPRT=y
++CONFIG_MSM_QMI_INTERFACE=y
++CONFIG_MSM_SUBSYSTEM_RESTART=y
++CONFIG_MSM_SYSMON_COMM=y
++CONFIG_MSM_PIL=y
++CONFIG_MSM_PIL_SSR_GENERIC=y
++CONFIG_MSM_PIL_MSS_QDSP6V5=y
++CONFIG_ICNSS=y
++CONFIG_MSM_PERFORMANCE=y
++CONFIG_MSM_EVENT_TIMER=y
++CONFIG_MSM_AVTIMER=y
++CONFIG_MSM_PM=y
++CONFIG_QTI_RPM_STATS_LOG=y
++CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC=y
++CONFIG_MEM_SHARE_QMI_SERVICE=y
++CONFIG_MSM_BAM_DMUX=y
++CONFIG_WCNSS_CORE=y
++CONFIG_WCNSS_CORE_PRONTO=y
++CONFIG_WCNSS_REGISTER_DUMP_ON_BITE=y
++CONFIG_BIG_CLUSTER_MIN_FREQ_ADJUST=y
++CONFIG_SERIAL_NUM=y
++CONFIG_QCOM_BIMC_BWMON=y
++CONFIG_DEVFREQ_GOV_QCOM_BW_HWMON=y
++CONFIG_DEVFREQ_SIMPLE_DEV=y
++CONFIG_QCOM_DEVFREQ_DEVBW=y
++CONFIG_SPDM_SCM=y
++CONFIG_DEVFREQ_SPDM=y
++CONFIG_DEVFREQ_BOOST=y
++CONFIG_DEVFREQ_INPUT_BOOST_DURATION_MS=64
++CONFIG_DEVFREQ_WAKE_BOOST_DURATION_MS=500
++CONFIG_DEVFREQ_MSM_CPUBW_BOOST_FREQ=3221
++CONFIG_IIO=y
++CONFIG_PWM=y
++CONFIG_PWM_QPNP=y
++CONFIG_PWM_QTI_LPG=y
++CONFIG_ARM_GIC_V3_ACL=y
++CONFIG_QTI_MPM=y
++CONFIG_ANDROID=y
++CONFIG_ANDROID_BINDER_IPC=y
++CONFIG_NVMEM=y
++CONFIG_NVMEM_SPMI_SDAM=y
++CONFIG_SENSORS_SSC=y
++CONFIG_MSM_TZ_LOG=y
++CONFIG_EXT4_FS=y
++CONFIG_EXT4_FS_SECURITY=y
++CONFIG_EXT4_ENCRYPTION=y
++CONFIG_EXT4_FS_ENCRYPTION=y
++CONFIG_F2FS_FS=y
++CONFIG_F2FS_FS_SECURITY=y
++CONFIG_F2FS_FS_ENCRYPTION=y
++CONFIG_QUOTA=y
++CONFIG_QUOTA_NETLINK_INTERFACE=y
++CONFIG_QFMT_V2=y
++CONFIG_FUSE_FS=y
++CONFIG_OVERLAY_FS=y
++CONFIG_VFAT_FS=y
++CONFIG_EXFAT_FS=y
++CONFIG_TMPFS=y
++CONFIG_TMPFS_POSIX_ACL=y
++# CONFIG_EFIVAR_FS is not set
++CONFIG_SDCARD_FS=y
++CONFIG_PSTORE=y
++CONFIG_PSTORE_CONSOLE=y
++CONFIG_PSTORE_RAM=y
++# CONFIG_NETWORK_FILESYSTEMS is not set
++CONFIG_NLS_CODEPAGE_437=y
++CONFIG_NLS_CODEPAGE_936=y
++CONFIG_NLS_CODEPAGE_950=y
++CONFIG_NLS_ISO8859_1=y
++CONFIG_NLS_UTF8=y
++CONFIG_PRINTK_TIME=y
++CONFIG_DEBUG_INFO=y
++CONFIG_MAGIC_SYSRQ=y
++CONFIG_PANIC_TIMEOUT=5
++# CONFIG_DEBUG_PREEMPT is not set
++CONFIG_CPU_FREQ_SWITCH_PROFILER=y
++CONFIG_PFK=y
++CONFIG_SECURITY_PERF_EVENTS_RESTRICT=y
++CONFIG_SECURITY=y
++CONFIG_HARDENED_USERCOPY=y
++CONFIG_SECURITY_SELINUX=y
++CONFIG_SECURITY_SMACK=y
++CONFIG_CRYPTO_GCM=y
++CONFIG_CRYPTO_XCBC=y
++CONFIG_CRYPTO_MD4=y
++CONFIG_CRYPTO_TWOFISH=y
++CONFIG_CRYPTO_ZSTD=y
++CONFIG_CRYPTO_ANSI_CPRNG=y
++CONFIG_CRYPTO_DEV_QCOM_MSM_QCE=y
++CONFIG_CRYPTO_DEV_QCRYPTO=y
++CONFIG_CRYPTO_DEV_QCEDEV=y
++CONFIG_ARM64_CRYPTO=y
++CONFIG_CRYPTO_SHA1_ARM64_CE=y
++CONFIG_CRYPTO_SHA2_ARM64_CE=y
++CONFIG_CRYPTO_GHASH_ARM64_CE=y
++CONFIG_CRYPTO_AES_ARM64_CE_CCM=y
++CONFIG_CRYPTO_AES_ARM64_CE_BLK=y
++CONFIG_CRYPTO_AES_ARM64_NEON_BLK=y
++CONFIG_CRYPTO_CRC32_ARM64=y
++CONFIG_QMI_ENCDEC=y
++
++# ---- C7ROM: Samsung Galaxy C7 (SM-C7000 / c7ltechn) ----
++# 目前只有已确认移植并编译通过的驱动；其它外设驱动落地后逐个加进来
++# （目标清单见 kernel/c7lte-defconfig.fragment）
++CONFIG_KEYBOARD_ABOV_TOUCH_16XX=y
+diff --git a/drivers/input/keyboard/Kconfig b/drivers/input/keyboard/Kconfig
+index cbd75cf..d3d9145 100644
+--- a/drivers/input/keyboard/Kconfig
++++ b/drivers/input/keyboard/Kconfig
+@@ -735,3 +735,18 @@ config KEYBOARD_BCM
+ 	  module will be called bcm-keypad.
+ 
+ endif
++
++config KEYBOARD_ABOV_TOUCH_16XX
++	tristate "ABOV MC96FT16xx touchkey (Samsung Galaxy C7)"
++	depends on I2C
++	select INPUT_EVDEV
++	help
++	  Say Y here to enable the ABOV MC96FT16xx capacitive touchkey
++	  controller found on the Samsung Galaxy C7 (SM-C7000).
++
++	  Ported from the Samsung 3.18 kernel (abov_touchkey_16xx.c) to
++	  Linux 4.9 by the C7ROM project.  Samsung-private dependencies
++	  (sec_class / async_initcall) are provided by small shims.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called abov_touchkey_16xx.
+diff --git a/drivers/input/keyboard/Makefile b/drivers/input/keyboard/Makefile
+index d9f4cfc..a484d72 100644
+--- a/drivers/input/keyboard/Makefile
++++ b/drivers/input/keyboard/Makefile
+@@ -64,3 +64,6 @@ obj-$(CONFIG_KEYBOARD_TEGRA)		+= tegra-kbc.o
+ obj-$(CONFIG_KEYBOARD_TWL4030)		+= twl4030_keypad.o
+ obj-$(CONFIG_KEYBOARD_XTKBD)		+= xtkbd.o
+ obj-$(CONFIG_KEYBOARD_W90P910)		+= w90p910_keypad.o
++obj-$(CONFIG_KEYBOARD_ABOV_TOUCH_16XX)	+= abov_touchkey_16xx.o
++obj-$(CONFIG_KEYBOARD_ABOV_TOUCH_16XX)	+= abov_touchkey_sec.o
++CFLAGS_abov_touchkey_16xx.o += -Wno-error=bool-compare -Wno-error=maybe-uninitialized
+diff --git a/drivers/input/keyboard/abov_touchkey_16xx.c b/drivers/input/keyboard/abov_touchkey_16xx.c
+new file mode 100755
+index 0000000..19c726a
+--- /dev/null
++++ b/drivers/input/keyboard/abov_touchkey_16xx.c
+@@ -0,0 +1,1912 @@
++/* abov_touchkey.c -- Linux driver for abov chip as touchkey
++ *
++ * Copyright (C) 2013 Samsung Electronics Co.Ltd
++ * Author: Junkyeong Kim <jk0430.kim@samsung.com>
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2, or (at your option) any
++ * later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ */
++
++#include <linux/delay.h>
++#include <linux/firmware.h>
++#include <linux/gpio.h>
++#include <linux/i2c.h>
++#include <linux/init.h>
++#include <linux/input.h>
++#include <linux/input/mt.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/io.h>
++#include <asm/unaligned.h>
++#include <linux/regulator/consumer.h>
++#include <linux/pinctrl/consumer.h>
++
++#include <linux/sec_class.h>
++#include <linux/async_initcall.h>
++
++#ifdef CONFIG_OF
++#include <linux/of_gpio.h>
++#endif
++#ifdef CONFIG_INPUT_BOOSTER
++#include <linux/input/input_booster.h>
++#endif
++
++#ifdef CONFIG_TOUCHSCREEN_DUMP_MODE
++#include <linux/sec_debug.h>
++#endif
++
++#define ABOV_TK_NAME "abov-ft1604"
++
++/* registers */
++#define ABOV_BTNSTATUS		0x00
++#define ABOV_FW_VER		0x01
++#define ABOV_PCB_VER		0x02
++#define ABOV_COMMAND		0x03
++#define ABOV_THRESHOLD		0x04
++#define ABOV_SENS		0x05
++#define ABOV_SETIDAC		0x06
++#define ABOV_DIFFDATA		0x0A
++#define ABOV_RAWDATA		0x0E
++#define ABOV_VENDORID		0x12
++#define ABOV_GLOVE		0x13
++#define ABOV_MD_VER		0x14
++
++/* command */
++#define CMD_LED_ON		0x10
++#define CMD_LED_OFF		0x20
++#define CMD_DATA_UPDATE		0x40
++#define CMD_LED_CTRL_ON		0x60
++#define CMD_LED_CTRL_OFF	0x70
++#define CMD_STOP_MODE		0x80
++#define CMD_GLOVE_ON		0x20
++#define CMD_GLOVE_OFF		0x10
++
++#define ABOV_BOOT_DELAY		45
++#define ABOV_RESET_DELAY	150
++
++static struct device *sec_touchkey;
++
++#define FW_VERSION 0x05
++#define FW_CHECKSUM_H 0x9A
++#define FW_CHECKSUM_L 0x5A
++
++/* Force FW update if module# is different */
++#undef FORCE_FW_UPDATE_DIFF_MODULE
++
++/* Touchkey LED twinkle during booting in factory sw (in LCD detached status) */
++#ifdef CONFIG_SEC_FACTORY
++#define LED_TWINKLE_BOOTING
++#endif
++
++
++#define TK_FW_PATH_SDCARD "/sdcard/Firmware/TOUCHKEY/abov_fw.bin"
++
++#ifdef LED_TWINKLE_BOOTING
++static void led_twinkle_work(struct work_struct *work);
++#endif
++
++#define I2C_M_WR 0		/* for i2c */
++
++enum {
++	BUILT_IN = 0,
++	SDCARD,
++};
++
++#ifdef CONFIG_SAMSUNG_LPM_MODE
++extern int poweroff_charging;
++#endif
++extern int get_lcd_attached(char *mode);
++extern unsigned int system_rev;
++extern struct class *sec_class;
++static int touchkey_keycode[] = { 0,
++	KEY_RECENT, KEY_BACK,
++};
++
++struct abov_ft1604_info {
++	struct i2c_client *client;
++	struct input_dev *input_dev;
++	struct abov_ft1604_devicetree_data *dtdata;
++	struct mutex lock;
++	struct pinctrl *pinctrl;
++
++	const struct firmware *firm_data_bin;
++	const u8 *firm_data_ums;
++	char phys[32];
++	long firm_size;
++	int irq;
++	u16 menu_s;
++	u16 back_s;
++	u16 menu_raw;
++	u16 back_raw;
++	int (*power) (bool on);
++	int touchkey_count;
++	u8 fw_update_state;
++	u8 fw_ver;
++	u8 md_ver;
++	u8 checksum_h;
++	u8 checksum_l;
++	u8 fw_ver_bin;
++	u8 md_ver_bin;	
++	u8 checksum_h_bin;
++	u8 checksum_l_bin;
++	bool enabled;
++#ifdef GLOVE_MODE
++	bool glovemode;
++#endif
++	bool probe_done;
++#ifdef LED_TWINKLE_BOOTING
++	struct delayed_work led_twinkle_work;
++	bool led_twinkle_check;
++#endif
++#ifdef CONFIG_INPUT_BOOSTER
++	struct input_booster *tkey_booster;
++#endif
++};
++
++struct abov_ft1604_devicetree_data {
++	unsigned long irq_flag;
++	int gpio_en;
++	int gpio_int;
++	int gpio_sda;
++	int gpio_scl;
++	int gpio_rst;
++	int gpio_tkey_led_en;
++	int vdd_io_alwayson;
++	int bringup;
++	struct regulator *vdd_io_vreg;
++	struct regulator *avdd_vreg;
++	const char *fw_name;
++	int (*power) (struct abov_ft1604_devicetree_data *dtdata, bool on);
++	int (*keyled) (bool on);
++	bool reverse_key;
++};
++
++
++static int abov_tk_input_open(struct input_dev *dev);
++static void abov_tk_input_close(struct input_dev *dev);
++
++static int abov_tk_i2c_read_checksum(struct abov_ft1604_info *info);
++
++static int abov_touchkey_led_status;
++static int abov_touchled_cmd_reserved;
++
++#ifdef GLOVE_MODE
++static int abov_glove_mode_enable(struct i2c_client *client, u8 cmd)
++{
++	return i2c_smbus_write_byte_data(client, ABOV_GLOVE, cmd);
++}
++#endif
++
++static int abov_tk_i2c_read(struct i2c_client *client,
++		u8 reg, u8 *val, unsigned int len)
++{
++	struct abov_ft1604_info *info = i2c_get_clientdata(client);
++	struct i2c_msg msg;
++	int ret;
++	int retry = 3;
++
++	mutex_lock(&info->lock);
++	msg.addr = client->addr;
++	msg.flags = I2C_M_WR;
++	msg.len = 1;
++	msg.buf = &reg;
++	while (retry--) {
++		ret = i2c_transfer(client->adapter, &msg, 1);
++		if (ret >= 0)
++			break;
++
++		input_err(true, &client->dev, "%s fail(address set)(%d)\n",
++			__func__, retry);
++		usleep_range(10 * 1000, 10 * 1000);
++	}
++	if (ret < 0) {
++		mutex_unlock(&info->lock);
++		return ret;
++	}
++	retry = 3;
++	msg.flags = 1;/*I2C_M_RD*/
++	msg.len = len;
++	msg.buf = val;
++	while (retry--) {
++		ret = i2c_transfer(client->adapter, &msg, 1);
++		if (ret >= 0) {
++			mutex_unlock(&info->lock);
++			return 0;
++		}
++		input_err(true, &client->dev, "%s fail(data read)(%d)\n",
++			__func__, retry);
++		usleep_range(10 * 1000, 10 * 1000);
++	}
++	mutex_unlock(&info->lock);
++	return ret;
++}
++
++static int abov_tk_i2c_write(struct i2c_client *client,
++		u8 reg, u8 *val, unsigned int len)
++{
++	struct abov_ft1604_info *info = i2c_get_clientdata(client);
++	struct i2c_msg msg[1];
++	unsigned char data[2];
++	int ret;
++	int retry = 3;
++
++	mutex_lock(&info->lock);
++	data[0] = reg;
++	data[1] = *val;
++	msg->addr = client->addr;
++	msg->flags = I2C_M_WR;
++	msg->len = 2;
++	msg->buf = data;
++
++	while (retry--) {
++		ret = i2c_transfer(client->adapter, msg, 1);
++		if (ret >= 0) {
++			mutex_unlock(&info->lock);
++			return 0;
++		}
++		input_err(true, &client->dev, "%s fail(%d)\n",
++			__func__, retry);
++		usleep_range(10 * 1000, 10 * 1000);
++	}
++	mutex_unlock(&info->lock);
++	return ret;
++}
++
++static void release_all_fingers(struct abov_ft1604_info *info)
++{
++	struct i2c_client *client = info->client;
++	int i;
++
++	input_dbg(true, &client->dev, "[TK] %s\n", __func__);
++
++	for (i = 1; i < info->touchkey_count; i++) {
++		input_report_key(info->input_dev,
++			touchkey_keycode[i], 0);
++	}
++	input_sync(info->input_dev);
++
++#ifdef CONFIG_INPUT_BOOSTER
++	if (info->tkey_booster && info->tkey_booster->dvfs_set)
++		info->tkey_booster->dvfs_set(info->tkey_booster, 2);
++#endif
++}
++
++static int abov_tk_reset_for_bootmode(struct abov_ft1604_info *info)
++{
++	if (gpio_get_value(info->dtdata->gpio_en)) {
++		gpio_direction_output(info->dtdata->gpio_en, 0);
++		msleep(50);
++	}
++
++	gpio_direction_output(info->dtdata->gpio_en, 1);
++
++	return 0;
++}
++
++static void abov_tk_reset(struct abov_ft1604_info *info)
++{
++	struct i2c_client *client = info->client;
++
++	if (info->enabled == false)
++		return;
++
++	input_info(true, &client->dev, "%s++\n", __func__);
++	disable_irq_nosync(info->irq);
++
++	info->enabled = false;
++
++	release_all_fingers(info);
++
++	abov_tk_reset_for_bootmode(info);
++	msleep(ABOV_RESET_DELAY);
++
++#ifdef GLOVE_MODE
++	if (info->glovemode)
++		abov_glove_mode_enable(client, CMD_GLOVE_ON);
++#endif
++
++	info->enabled = true;
++
++	enable_irq(info->irq);
++	input_info(true, &client->dev, "%s--\n", __func__);
++}
++
++static irqreturn_t abov_tk_interrupt(int irq, void *dev_id)
++{
++	struct abov_ft1604_info *info = dev_id;
++	struct i2c_client *client = info->client;
++	int ret, retry;
++	u8 buf;
++	bool press;
++	int menu_data;
++	int back_data;
++	u8 menu_press;
++	u8 back_press;
++
++	ret = abov_tk_i2c_read(client, ABOV_BTNSTATUS, &buf, 1);
++	if (ret < 0) {
++		retry = 3;
++		while (retry--) {
++			input_err(true, &client->dev, "%s read fail(%d)\n",
++				__func__, retry);
++			ret = abov_tk_i2c_read(client, ABOV_BTNSTATUS, &buf, 1);
++			if (ret == 0)
++				break;
++			else
++				usleep_range(10 * 1000, 10 * 1000);
++		}
++		if (retry == 0) {
++			abov_tk_reset(info);
++			return IRQ_HANDLED;
++		}
++	}
++
++	// added dual key mode concept for screen pinning(google)
++	
++	menu_data = buf & 0x03;
++	back_data = (buf >> 2) & 0x03;
++
++	if (info->dtdata->reverse_key) {
++		u8 tmp;
++		tmp = menu_data;
++		menu_data = back_data;
++		back_data = tmp;
++	}
++
++	menu_press = !(menu_data % 2);
++	back_press = !(back_data % 2);
++
++	press = (menu_data ? menu_press : 0) || (back_data ? back_press : 0);
++
++	if (menu_data)
++		input_report_key(info->input_dev,
++			touchkey_keycode[1], menu_press);
++	if (back_data)
++		input_report_key(info->input_dev,
++			touchkey_keycode[2], back_press);
++
++#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
++	input_info(true, &client->dev,
++		"key %s%s ver0x%02x\n",
++		menu_data ? (menu_press ? "P" : "R") : "",
++		back_data ? (back_press ? "P" : "R") : "",
++		info->fw_ver);
++#else
++	input_info(true, &client->dev,
++		"%s%s%x ver0x%02x\n",
++		menu_data ? (menu_press ? "menu P " : "menu R ") : "",
++		back_data ? (back_press ? "back P " : "back R ") : "",
++		buf, info->fw_ver);
++#endif
++
++#if 0 // old concept
++	button = buf & 0x03;
++	press = !!(buf & 0x8);
++
++	if (press) {
++		input_report_key(info->input_dev,
++			touchkey_keycode[button], 0);
++#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
++		dev_notice(&client->dev,
++			"key R\n");
++#else
++		dev_notice(&client->dev,
++			"key R : %d(%d) ver0x%02x\n",
++			touchkey_keycode[button], buf, info->fw_ver);
++#endif
++	} else {
++		input_report_key(info->input_dev,
++			touchkey_keycode[button], 1);
++#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
++		dev_notice(&client->dev,
++			"key P\n");
++#else
++		dev_notice(&client->dev,
++			"key P : %d(%d)\n",
++			touchkey_keycode[button], buf);
++#endif
++	}
++#endif
++	input_sync(info->input_dev);
++
++#ifdef CONFIG_INPUT_BOOSTER
++	if (info->tkey_booster && info->tkey_booster->dvfs_set)
++		info->tkey_booster->dvfs_set(info->tkey_booster, press);
++#endif
++
++	return IRQ_HANDLED;
++}
++
++#ifdef CONFIG_INPUT_BOOSTER
++static ssize_t boost_level_store(struct device *dev,
++				   struct device_attribute *attr,
++				   const char *buf, size_t count)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++	int val, stage;
++	struct dvfs value;
++
++	if (!info->tkey_booster) {
++		input_err(true, &info->client->dev,
++			"%s: booster is NULL\n", __func__);
++		return count;
++	}
++
++	sscanf(buf, "%d", &val);
++
++	stage = 1 << val;
++
++	if (!(info->tkey_booster->dvfs_stage & stage)) {
++		input_info(true, &info->client->dev,
++			"%s: wrong cmd %d\n", __func__, val);
++		return count;
++	}
++
++	info->tkey_booster->dvfs_boost_mode = stage;
++	input_info(true, &info->client->dev,
++			"%s: dvfs_boost_mode = 0x%X\n",
++			__func__, info->tkey_booster->dvfs_boost_mode);
++
++	if (info->tkey_booster->dvfs_boost_mode == DVFS_STAGE_NONE) {
++		if (info->tkey_booster->dvfs_set)
++			info->tkey_booster->dvfs_set(info->tkey_booster, 2);
++	} else if (info->tkey_booster->dvfs_boost_mode == DVFS_STAGE_SINGLE) {
++		input_booster_get_default_setting("head", &value);
++		info->tkey_booster->dvfs_freq = value.cpu_freq;
++		input_info(true, &info->client->dev,
++			"%s: boost_mode SINGLE, dvfs_freq = %d\n",
++			__func__, info->tkey_booster->dvfs_freq);
++	} else if (info->tkey_booster->dvfs_boost_mode == DVFS_STAGE_DUAL) {
++		input_booster_get_default_setting("tail", &value);
++		info->tkey_booster->dvfs_freq = value.cpu_freq;
++		input_info(true, &info->client->dev,
++			"%s: boost_mode DUAL, dvfs_freq = %d\n",
++			__func__, info->tkey_booster->dvfs_freq);
++	}
++
++	return count;
++}
++#endif
++
++static int touchkey_led_set(struct abov_ft1604_info *info, int data)
++{
++	u8 cmd;
++	int ret;
++
++	if (data == 1)
++		cmd = CMD_LED_ON;
++	else
++		cmd = CMD_LED_OFF;
++
++	if (!info->enabled)
++		goto out;
++
++	if (info->dtdata->gpio_tkey_led_en >= 0)
++		gpio_direction_output(info->dtdata->gpio_tkey_led_en,data);
++
++	ret = abov_tk_i2c_write(info->client, ABOV_BTNSTATUS, &cmd, 1);
++	if (ret < 0) {
++		input_err(true, &info->client->dev, "%s fail(%d)\n", __func__, ret);
++		goto out;
++	}
++
++	return 0;
++out:
++	abov_touchled_cmd_reserved = 1;
++	abov_touchkey_led_status = cmd;
++	return 1;
++}
++
++static ssize_t touchkey_led_control(struct device *dev,
++		 struct device_attribute *attr, const char *buf,
++		 size_t count)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++	struct i2c_client *client = info->client;
++	int data;
++	int ret;
++
++	ret = sscanf(buf, "%d", &data);
++	if (ret != 1) {
++		input_err(true, &client->dev, "%s: cmd read err\n", __func__);
++		return count;
++	}
++
++	if (!(data == 0 || data == 1)) {
++		input_err(true, &client->dev, "%s: wrong command(%d)\n",
++			__func__, data);
++		return count;
++	}
++
++#ifdef LED_TWINKLE_BOOTING
++	if (info->led_twinkle_check == 1){
++		info->led_twinkle_check = 0;
++		cancel_delayed_work(&info->led_twinkle_work);
++	}
++#endif
++
++	if (touchkey_led_set(info, data))
++		return count;
++
++	msleep(20);
++
++	abov_touchled_cmd_reserved = 0;
++	input_info(true, &client->dev, "%s data(%d)\n",__func__,data);
++
++	return count;
++}
++
++static ssize_t touchkey_threshold_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++	struct i2c_client *client = info->client;
++	u8 r_buf;
++	int ret;
++
++	ret = abov_tk_i2c_read(client, ABOV_THRESHOLD, &r_buf, 1);
++	if (ret < 0) {
++		input_err(true, &client->dev, "%s fail(%d)\n", __func__, ret);
++		r_buf = 0;
++	}
++	return sprintf(buf, "%d\n", r_buf);
++}
++
++static void get_diff_data(struct abov_ft1604_info *info)
++{
++	struct i2c_client *client = info->client;
++	u8 r_buf[4];
++	int ret;
++
++	ret = abov_tk_i2c_read(client, ABOV_DIFFDATA, r_buf, 4);
++	if (ret < 0) {
++		input_err(true, &client->dev, "%s fail(%d)\n", __func__, ret);
++		info->menu_s = 0;
++		info->back_s = 0;
++		return;
++	}
++
++	info->menu_s = (r_buf[0] << 8) | r_buf[1];
++	info->back_s = (r_buf[2] << 8) | r_buf[3];
++}
++
++static ssize_t touchkey_menu_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++
++	get_diff_data(info);
++
++	return sprintf(buf, "%d\n", info->menu_s);
++}
++
++static ssize_t touchkey_back_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++
++	get_diff_data(info);
++
++	return sprintf(buf, "%d\n", info->back_s);
++}
++
++static void get_raw_data(struct abov_ft1604_info *info)
++{
++	struct i2c_client *client = info->client;
++	u8 r_buf[4];
++	int ret;
++
++	ret = abov_tk_i2c_read(client, ABOV_RAWDATA, r_buf, 4);
++	if (ret < 0) {
++		input_err(true, &client->dev, "%s fail(%d)\n", __func__, ret);
++		info->menu_raw = 0;
++		info->back_raw = 0;
++		return;
++	}
++
++	info->menu_raw = (r_buf[0] << 8) | r_buf[1];
++	info->back_raw = (r_buf[2] << 8) | r_buf[3];
++}
++
++static ssize_t touchkey_menu_raw_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++
++	get_raw_data(info);
++
++	return sprintf(buf, "%d\n", info->menu_raw);
++}
++
++static ssize_t touchkey_back_raw_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++
++	get_raw_data(info);
++
++	return sprintf(buf, "%d\n", info->back_raw);
++}
++
++static ssize_t bin_fw_ver(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++	struct i2c_client *client = info->client;
++
++	input_dbg(true, &client->dev, "fw version bin : 0x%x\n", info->fw_ver_bin);
++
++	return sprintf(buf, "0x%02x\n", info->fw_ver_bin);
++}
++
++static int get_tk_fw_version(struct abov_ft1604_info *info, bool bootmode)
++{
++	struct i2c_client *client = info->client;
++	u8 buf;
++	int ret;
++	int retry = 3;
++
++	ret = abov_tk_i2c_read(client, ABOV_FW_VER, &buf, 1);
++	if (ret < 0) {
++		while (retry--) {
++			input_err(true, &client->dev, "%s read fail(%d)\n",
++				__func__, retry);
++			if (!bootmode)
++				abov_tk_reset(info);
++			else
++				return -1;
++			ret = abov_tk_i2c_read(client, ABOV_FW_VER, &buf, 1);
++			if (ret == 0)
++				break;
++		}
++		if (retry == 0)
++			return -1;
++	}
++
++	info->fw_ver = buf;
++
++	retry = 3;
++	ret = abov_tk_i2c_read(client, ABOV_MD_VER, &buf, 1);
++	if (ret < 0) {
++		while (retry--) {
++			input_err(true, &client->dev, "%s read fail(%d)\n",
++				__func__, retry);
++			if (!bootmode)
++				abov_tk_reset(info);
++			else
++				return -1;
++			ret = abov_tk_i2c_read(client, ABOV_MD_VER, &buf, 1);
++			if (ret == 0)
++				break;
++		}
++		if (retry == 0)
++			return -1;
++	}
++
++	info->md_ver = buf;
++	input_info(true, &client->dev, "%s : fw = 0x%x, md = 0x%x\n",
++		__func__, info->fw_ver, info->md_ver);
++	return 0;
++}
++
++static ssize_t read_fw_ver(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++	struct i2c_client *client = info->client;
++	int ret;
++
++	ret = get_tk_fw_version(info, false);
++	if (ret < 0) {
++		input_err(true, &client->dev, "%s read fail\n", __func__);
++		info->fw_ver = 0;
++	}
++
++	abov_tk_i2c_read_checksum(info);
++
++	return sprintf(buf, "0x%02x\n", info->fw_ver);
++}
++
++static int abov_load_fw_kernel(struct abov_ft1604_info *info)
++{
++	struct i2c_client *client = info->client;
++	int ret = 0;
++
++	ret = request_firmware(&info->firm_data_bin,
++		info->dtdata->fw_name, &client->dev);
++	if (ret) {
++		input_err(true, &client->dev,
++			"%s request_firmware fail. \n", __func__);
++		return ret;
++	}
++	info->firm_size = info->firm_data_bin->size;	
++	info->fw_ver_bin = info->firm_data_bin->data[5];
++	info->md_ver_bin = info->firm_data_bin->data[1];
++	input_info(true, &client->dev, "%s : fw = 0x%x, md = 0x%x\n",
++		__func__, info->fw_ver_bin, info->md_ver_bin);
++	
++	info->checksum_h_bin = info->firm_data_bin->data[8];
++	info->checksum_l_bin = info->firm_data_bin->data[9];
++
++	return ret;
++}
++
++static int abov_load_fw(struct abov_ft1604_info *info, u8 cmd)
++{
++	struct i2c_client *client = info->client;
++	struct file *fp;
++	mm_segment_t old_fs;
++	long fsize, nread;
++	int ret = 0;
++
++	switch(cmd) {
++	case BUILT_IN:
++		break;
++
++	case SDCARD:
++		old_fs = get_fs();
++		set_fs(get_ds());
++		fp = filp_open(TK_FW_PATH_SDCARD, O_RDONLY, S_IRUSR);
++		if (IS_ERR(fp)) {
++			input_err(true, &client->dev,
++				"%s %s open error\n", __func__, TK_FW_PATH_SDCARD);
++			ret = -ENOENT;
++			goto fail_sdcard_open;
++		}
++
++		fsize = fp->f_path.dentry->d_inode->i_size;
++		info->firm_data_ums = kzalloc((size_t)fsize, GFP_KERNEL);
++		if (!info->firm_data_ums) {
++			input_err(true, &client->dev,
++				"%s fail to kzalloc for fw\n", __func__);
++			ret = -ENOMEM;
++			goto fail_sdcard_kzalloc;
++		}
++
++		nread = vfs_read(fp,
++			(char __user *)info->firm_data_ums, fsize, &fp->f_pos);
++		if (nread != fsize) {
++			input_err(true, &client->dev,
++				"%s fail to vfs_read file\n", __func__);
++			ret = -EINVAL;
++			goto fail_sdcard_size;
++		}
++		filp_close(fp, current->files);
++		set_fs(old_fs);
++		info->firm_size = nread;
++		break;
++
++	default:
++		ret = -1;
++		break;
++	}
++	input_info(true, &client->dev, "fw_size : %lu\n", info->firm_size);
++	input_info(true, &client->dev, "%s success\n", __func__);
++	return ret;
++
++fail_sdcard_size:
++	kfree(&info->firm_data_ums);
++fail_sdcard_kzalloc:
++	filp_close(fp, current->files);
++fail_sdcard_open:
++	set_fs(old_fs);
++	return ret;
++}
++
++static int abov_tk_check_busy(struct abov_ft1604_info *info)
++{
++	int ret, count = 0;
++	unsigned char val = 0x00;
++
++	do {
++		ret = i2c_master_recv(info->client, &val, sizeof(val));
++
++		if (val) {
++			count++;
++		} else {
++			break;
++		}
++
++	} while(1);
++
++	if (count > 1000)
++		input_err(true, &info->client->dev, "%s: busy %d\n", __func__, count);
++	return ret;
++}
++
++static int abov_tk_i2c_read_checksum(struct abov_ft1604_info *info)
++{
++	unsigned char data[6] = {0xAC, 0x9E, 0x10, 0x00, 0x3F, 0xFF};
++	unsigned char checksum[5] = {0, };
++	int ret;
++	unsigned char reg = 0x00;
++
++	i2c_master_send(info->client, data, 6);
++
++	usleep_range(5 * 1000, 5 * 1000);
++
++	abov_tk_check_busy(info);
++
++	ret = abov_tk_i2c_read(info->client, reg, checksum, 5);
++
++	input_info(true, &info->client->dev, "%s: ret:%d [%X][%X][%X][%X][%X]\n",
++			__func__, ret, checksum[0], checksum[1], checksum[2]
++			, checksum[3], checksum[4]);
++	info->checksum_h = checksum[3];
++	info->checksum_l = checksum[4];
++	return 0;
++}
++
++static int abov_tk_fw_write(struct abov_ft1604_info *info, unsigned char *addrH,
++						unsigned char *addrL, unsigned char *val)
++{
++	int length = 36, ret = 0;
++	unsigned char data[36];
++
++	data[0] = 0xAC;
++	data[1] = 0x7A;
++	memcpy(&data[2], addrH, 1);
++	memcpy(&data[3], addrL, 1);
++	memcpy(&data[4], val, 32);
++
++	ret = i2c_master_send(info->client, data, length);
++	if (ret != length) {
++		input_err(true, &info->client->dev, "%s: write fail[%x%x], %d\n", __func__, *addrH, *addrL, ret);
++		return ret;
++	}
++
++	usleep_range(2 * 1000, 2 * 1000);
++
++	abov_tk_check_busy(info);
++
++	return 0;
++}
++
++static int abov_tk_fw_mode_enter(struct abov_ft1604_info *info)
++{
++	unsigned char data[3] = {0xAC, 0x5B, 0x2D};
++	int ret = 0;
++
++	ret = i2c_master_send(info->client, data, 3);
++	if (ret != 3) {
++		input_err(true, &info->client->dev, "%s: write fail\n", __func__);
++		return -1;
++	}
++
++	return 0;
++
++}
++
++static int abov_tk_fw_update(struct abov_ft1604_info *info, u8 cmd)
++{
++	int ret, ii = 0;
++	int count;
++	unsigned short address;
++	unsigned char addrH, addrL;
++	unsigned char data[32] = {0, };
++
++
++	input_err(true, &info->client->dev, "%s:1\n", __func__);
++
++	count = info->firm_size / 32;
++	address = 0x1000;
++
++	gpio_direction_output(info->dtdata->gpio_en, 0);
++	msleep(30);
++	gpio_direction_output(info->dtdata->gpio_en, 1);
++	usleep_range(ABOV_BOOT_DELAY * 1000, ABOV_BOOT_DELAY * 1000);
++
++	input_err(true, &info->client->dev, "%s:2\n", __func__);
++
++	ret = abov_tk_fw_mode_enter(info);
++
++	input_err(true, &info->client->dev, "%s:3\n", __func__);
++
++	msleep(1100);
++	
++	for (ii = 1; ii < count; ii++) {
++
++		addrH = (unsigned char)((address >> 8) & 0xFF);
++		addrL = (unsigned char)(address & 0xFF);
++		if (cmd == BUILT_IN)
++			memcpy(data, &info->firm_data_bin->data[ii * 32], 32);
++		else if (cmd == SDCARD)
++			memcpy(data, &info->firm_data_ums[ii * 32], 32);
++
++		ret = abov_tk_fw_write(info, &addrH, &addrL, data);
++		if (ret < 0) {
++			input_err(true, &info->client->dev, "%s: err, no device : %d\n", __func__, ret);
++			return ret;
++		}
++		usleep_range(3 * 1000, 3 * 1000);
++
++		abov_tk_check_busy(info);
++
++		address += 0x20;
++
++		memset(data, 0, 32);
++	}
++
++	input_err(true, &info->client->dev, "%s:4\n", __func__);
++	ret = abov_tk_i2c_read_checksum(info);
++
++	input_err(true, &info->client->dev, "%s:5\n", __func__);
++
++
++	gpio_direction_output(info->dtdata->gpio_en, 0);
++	msleep(30);
++	gpio_direction_output(info->dtdata->gpio_en, 1);	
++	msleep(100);
++
++	return ret;
++
++
++}
++
++
++static void abov_release_fw(struct abov_ft1604_info *info, u8 cmd)
++{
++	switch(cmd) {
++	case BUILT_IN:
++		release_firmware(info->firm_data_bin);
++		break;
++
++	case SDCARD:
++		kfree(info->firm_data_ums);
++		break;
++
++	default:
++		break;
++	}
++}
++
++static int abov_flash_fw(struct abov_ft1604_info *info, bool probe, u8 cmd)
++{
++	struct i2c_client *client = info->client;
++	int retry = 2;
++	int ret;
++	int block_count;
++	const u8 *fw_data;
++
++	ret = get_tk_fw_version(info, probe);
++	if (ret)
++		info->fw_ver = 0;
++
++	ret = abov_load_fw(info, cmd);
++	if (ret) {
++		input_err(true, &client->dev,
++			"%s fw load fail\n", __func__);
++		return ret;
++	}
++
++	switch(cmd) {
++	case BUILT_IN:
++		fw_data = info->firm_data_bin->data;
++		break;
++
++	case SDCARD:
++		fw_data = info->firm_data_ums;
++		break;
++
++	default:
++		return -1;
++		break;
++	}
++
++	block_count = (int)(info->firm_size / 32);
++
++	while (retry--) {
++		ret = abov_tk_fw_update(info, cmd);
++		if (ret < 0)
++			break;
++
++		if (cmd == BUILT_IN) {
++/*
++			if ((info->checksum_h != info->checksum_h_bin) ||
++				(info->checksum_l != info->checksum_l_bin)) {
++				dev_err(&client->dev,
++					"%s checksum fail.(0x%x,0x%x),(0x%x,0x%x) retry:%d\n",
++					__func__, info->checksum_h, info->checksum_l,
++					info->checksum_h_bin, info->checksum_l_bin, retry);
++				ret = -1;
++				continue;
++			}
++*/
++		}
++		abov_tk_reset_for_bootmode(info);
++		msleep(ABOV_RESET_DELAY);
++		ret = get_tk_fw_version(info, true);
++		if (ret) {
++			input_err(true, &client->dev, "%s fw version read fail\n", __func__);
++			ret = -1;
++			continue;
++		}
++
++		if (info->fw_ver == 0) {
++			input_err(true, &client->dev, "%s fw version fail (0x%x)\n",
++				__func__, info->fw_ver);
++			ret = -1;
++			continue;
++		}
++
++		if ((cmd == BUILT_IN) && (info->fw_ver != info->fw_ver_bin)) {
++			input_err(true, &client->dev, "%s fw version fail 0x%x, 0x%x\n",
++				__func__, info->fw_ver, info->fw_ver_bin);
++			ret = -1;
++			continue;
++		}
++		ret = 0;
++		break;
++	}
++
++	abov_release_fw(info, cmd);
++
++	return ret;
++}
++
++static ssize_t touchkey_fw_update(struct device *dev,
++			struct device_attribute *attr, const char *buf, size_t count)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++	struct i2c_client *client = info->client;
++	int ret;
++	u8 cmd;
++
++	switch(*buf) {
++	case 's':
++	case 'S':
++		cmd = BUILT_IN;
++		break;
++	case 'i':
++	case 'I':
++		cmd = SDCARD;
++		break;
++	default:
++		info->fw_update_state = 2;
++		goto touchkey_fw_update_out;
++	}
++
++	info->fw_update_state = 1;
++	disable_irq(info->irq);
++	info->enabled = false;
++
++	if(cmd == BUILT_IN){
++		ret = abov_load_fw_kernel(info);
++		if (ret) {
++			input_err(true, &client->dev,
++				"failed to abov_load_fw_kernel (%d)\n", ret);
++		} else {
++			input_err(true, &client->dev,
++				"fw version read success (%d)\n", ret);
++		}
++	}
++	ret = abov_flash_fw(info, false, cmd);
++#ifdef GLOVE_MODE
++	if (info->glovemode)
++		abov_glove_mode_enable(client, CMD_GLOVE_ON);
++#endif
++	info->enabled = true;
++	enable_irq(info->irq);
++	if (ret) {
++		input_err(true, &client->dev, "%s fail\n", __func__);
++//		info->fw_update_state = 2;
++		info->fw_update_state = 0;
++
++	} else {
++		input_info(true, &client->dev, "%s success\n", __func__);
++		info->fw_update_state = 0;
++	}
++
++touchkey_fw_update_out:
++	dev_dbg(&client->dev, "%s : %d\n", __func__, info->fw_update_state);
++
++	return count;
++}
++
++static ssize_t touchkey_fw_update_status(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++	struct i2c_client *client = info->client;
++	int count = 0;
++
++	input_info(true, &client->dev, "%s : %d\n", __func__, info->fw_update_state);
++
++	if (info->fw_update_state == 0)
++		count = sprintf(buf, "PASS\n");
++	else if (info->fw_update_state == 1)
++		count = sprintf(buf, "Downloading\n");
++	else if (info->fw_update_state == 2)
++		count = sprintf(buf, "Fail\n");
++
++	return count;
++}
++
++#ifdef GLOVE_MODE
++static ssize_t abov_glove_mode(struct device *dev,
++	 struct device_attribute *attr, const char *buf, size_t count)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++	struct i2c_client *client = info->client;
++	int scan_buffer;
++	int ret;
++	u8 cmd;
++
++	ret = sscanf(buf, "%d", &scan_buffer);
++	if (ret != 1) {
++		input_err(true, &client->dev, "%s: cmd read err\n", __func__);
++		return count;
++	}
++
++	if (!(scan_buffer == 0 || scan_buffer == 1)) {
++		input_err(true, &client->dev, "%s: wrong command(%d)\n",
++			__func__, scan_buffer);
++		return count;
++	}
++
++	if (!info->enabled)
++		return count;
++
++	if (info->glovemode == scan_buffer) {
++		input_info(true, &client->dev, "%s same command(%d)\n",
++			__func__, scan_buffer);
++		return count;
++	}
++
++	if (scan_buffer == 1) {
++		input_info(true, &client->dev, "%s glove mode\n", __func__);
++		cmd = CMD_GLOVE_ON;
++	} else {
++		input_info(true, &client->dev, "%s normal mode\n", __func__);
++		cmd = CMD_GLOVE_OFF;
++	}
++
++	ret = abov_glove_mode_enable(client, cmd);
++	if (ret < 0) {
++		input_err(true, &client->dev, "%s fail(%d)\n", __func__, ret);
++		return count;
++	}
++
++	info->glovemode = scan_buffer;
++
++	return count;
++}
++
++static ssize_t abov_glove_mode_show(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	struct abov_ft1604_info *info = dev_get_drvdata(dev);
++
++	return sprintf(buf, "%d\n", info->glovemode);
++}
++#endif
++
++static DEVICE_ATTR(touchkey_threshold, S_IRUGO, touchkey_threshold_show, NULL);
++static DEVICE_ATTR(brightness, S_IRUGO | S_IWUSR | S_IWGRP, NULL,
++			touchkey_led_control);
++static DEVICE_ATTR(touchkey_recent, S_IRUGO, touchkey_menu_show, NULL);
++static DEVICE_ATTR(touchkey_back, S_IRUGO, touchkey_back_show, NULL);
++static DEVICE_ATTR(touchkey_recent_raw, S_IRUGO, touchkey_menu_raw_show, NULL);
++static DEVICE_ATTR(touchkey_back_raw, S_IRUGO, touchkey_back_raw_show, NULL);
++static DEVICE_ATTR(touchkey_firm_version_phone, S_IRUGO, bin_fw_ver, NULL);
++static DEVICE_ATTR(touchkey_firm_version_panel, S_IRUGO, read_fw_ver, NULL);
++static DEVICE_ATTR(touchkey_firm_update, S_IRUGO | S_IWUSR | S_IWGRP, NULL,
++			touchkey_fw_update);
++static DEVICE_ATTR(touchkey_firm_update_status, S_IRUGO | S_IWUSR | S_IWGRP,
++			touchkey_fw_update_status, NULL);
++#ifdef GLOVE_MODE
++static DEVICE_ATTR(glove_mode, S_IRUGO | S_IWUSR | S_IWGRP,
++			abov_glove_mode_show, abov_glove_mode);
++#endif
++#ifdef CONFIG_INPUT_BOOSTER
++static DEVICE_ATTR(boost_level,
++		   S_IWUSR | S_IWGRP, NULL, boost_level_store);
++#endif
++
++static struct attribute *sec_touchkey_attributes[] = {
++	&dev_attr_touchkey_threshold.attr,
++	&dev_attr_brightness.attr,
++	&dev_attr_touchkey_recent.attr,
++	&dev_attr_touchkey_back.attr,
++	&dev_attr_touchkey_recent_raw.attr,
++	&dev_attr_touchkey_back_raw.attr,
++	&dev_attr_touchkey_firm_version_phone.attr,
++	&dev_attr_touchkey_firm_version_panel.attr,
++	&dev_attr_touchkey_firm_update.attr,
++	&dev_attr_touchkey_firm_update_status.attr,
++#ifdef GLOVE_MODE
++	&dev_attr_glove_mode.attr,
++#endif
++#ifdef CONFIG_INPUT_BOOSTER
++	&dev_attr_boost_level.attr,
++#endif
++	NULL,
++};
++
++static struct attribute_group sec_touchkey_attr_group = {
++	.attrs = sec_touchkey_attributes,
++};
++
++static int abov_tk_fw_check(struct abov_ft1604_info *info)
++{
++	struct i2c_client *client = info->client;
++	int ret;
++	bool force = false;
++
++	if (info->dtdata->bringup)
++		return 0;
++
++	ret = get_tk_fw_version(info, true);
++	if (ret) {
++		input_err(true, &client->dev,
++			"%s: i2c fail...[%d], addr[%d]\n",
++			__func__, ret, info->client->addr);
++#ifdef LED_TWINKLE_BOOTING
++		/* regard I2C fail & LCD attached status as no TKEY device */
++		if (get_lcd_attached("GET") == 0) {
++			input_err(true, &client->dev,
++				"%s : LCD is not attached\n", __func__);
++				return ret;
++		}
++#endif
++	}
++	ret = abov_load_fw_kernel(info);
++	if (ret) {
++		input_err(true, &client->dev,
++			"failed to abov_load_fw_kernel (%d)\n", ret);
++	} else {
++		input_err(true, &client->dev,
++			"fw version read success (%d)\n", ret);
++	}
++
++	if (info->md_ver != info->md_ver_bin) {
++		input_err(true, &client->dev,
++			"MD version is different.(IC %x, BN %x). Do force FW update\n",
++			info->md_ver, info->md_ver_bin);
++		force = true;
++	}
++
++	input_info(true, &client->dev, "version IC:0x%x, Bin:0x%x\n",info->fw_ver, info->fw_ver_bin);
++
++	if (info->fw_ver != info->fw_ver_bin || info->fw_ver > 0xf0 || force == true) {
++		input_err(true, &client->dev, "excute tk firmware update (0x%x -> 0x%x)\n",
++			info->fw_ver, info->fw_ver_bin);
++		ret = abov_flash_fw(info, true, BUILT_IN);
++		if (ret) {
++			input_err(true, &client->dev,
++				"failed to abov_flash_fw (%d)\n", ret);
++		} else {
++			input_err(true, &client->dev,
++				"fw update success\n");
++		}
++	}
++
++	return ret;
++}
++
++static int abov_power(struct abov_ft1604_devicetree_data *dtdata, bool on)
++{
++	int ret = 0;
++
++	// 1.8V on,off control.
++	if(!(dtdata->vdd_io_alwayson)){
++		if(dtdata->vdd_io_vreg) {
++			if (on)
++				ret = regulator_enable(dtdata->vdd_io_vreg);
++			else
++				ret = regulator_disable(dtdata->vdd_io_vreg);
++		}
++		else
++			pr_err("%s %s: iovdd reg NULL!! \n", SECLOG, __func__);
++
++		if(ret)
++			pr_err("%s %s: iovdd reg %s fail\n",
++				SECLOG, __func__, on ? "enable" : "disable");
++	}
++
++	if (gpio_is_valid(dtdata->gpio_tkey_led_en))
++		gpio_direction_output(dtdata->gpio_tkey_led_en, on);
++
++	pr_cont("%s %s: %s ", SECLOG, __func__, on ? "on" : "off");
++	if (gpio_is_valid(dtdata->gpio_en))
++		pr_cont("%s vdd_en:%d ", SECLOG, gpio_get_value(dtdata->gpio_en));
++	if (!IS_ERR_OR_NULL(dtdata->vdd_io_vreg))
++		pr_cont("%s vio_reg:%d%s ",
++				SECLOG, regulator_is_enabled(dtdata->vdd_io_vreg),
++				dtdata->vdd_io_alwayson ? "(always on)" : "");
++	if (gpio_is_valid(dtdata->gpio_tkey_led_en))
++		pr_cont("%sled_en:%d ", SECLOG, gpio_get_value(dtdata->gpio_tkey_led_en));
++	pr_cont("\n");
++
++	return ret;
++}
++
++static int abov_pinctrl_configure(struct abov_ft1604_info *info, 
++							bool active)
++{
++	struct pinctrl_state *set_state;
++	int retval;
++
++	if (active) {
++		set_state =
++			pinctrl_lookup_state(info->pinctrl,
++						"touchkey_active");
++		if (IS_ERR(set_state)) {
++			input_err(true, &info->client->dev, "%s: cannot get ts pinctrl active state\n", __func__);
++			return PTR_ERR(set_state);
++		}
++	} else {
++		set_state =
++			pinctrl_lookup_state(info->pinctrl,
++						"touchkey_suspend");
++		if (IS_ERR(set_state)) {
++			input_err(true, &info->client->dev, "%s: cannot get gpiokey pinctrl sleep state\n", __func__);
++			return PTR_ERR(set_state);
++		}
++	}
++	retval = pinctrl_select_state(info->pinctrl, set_state);
++	if (retval) {
++		input_err(true, &info->client->dev, "%s: cannot set ts pinctrl active state\n", __func__);
++		return retval;
++	}
++
++	input_info(true, &info->client->dev, "%s %s\n",
++			__func__, active ? "ACTIVE" : "SUSPEND");
++
++	return 0;
++}
++
++static int abov_gpio_reg_init(struct device *dev,
++			struct abov_ft1604_devicetree_data *dtdata)
++{
++	int ret = 0;
++
++	if (dtdata->gpio_rst > 0) {
++		ret = gpio_request(dtdata->gpio_rst, "tkey_gpio_rst");
++		if(ret < 0){
++			input_err(true, dev, "unable to request gpio_rst\n");
++			return ret;
++		}
++	}
++	ret = gpio_request(dtdata->gpio_int, "tkey_gpio_int");
++	if(ret < 0){
++		input_err(true, dev, "unable to request gpio_int\n");
++		return ret;
++	}
++
++	ret = gpio_request(dtdata->gpio_en, "tkey_gpio_en");
++	if(ret < 0){
++		input_err(true, dev, "unable to request gpio_en\n");
++		return ret;
++	}
++
++	if (dtdata->gpio_tkey_led_en >= 0) {
++	ret = gpio_request(dtdata->gpio_tkey_led_en, "gpio_tkey_led_en");
++	if(ret < 0){
++		input_err(true, dev, "unable to request gpio_tkey_led_en. ignoring\n");
++		ret = 0;
++	}
++	}
++
++	dtdata->vdd_io_vreg = devm_regulator_get(dev, "vddo");
++	if (IS_ERR(dtdata->vdd_io_vreg)){
++		dtdata->vdd_io_vreg = NULL;
++		input_err(true, dev, "dtdata->vdd_io_vreg get error, ignoring\n");
++	} else {
++		regulator_set_voltage(dtdata->vdd_io_vreg, 1800000, 1800000);
++
++		// 1.8V always on.
++		if(dtdata->vdd_io_alwayson){
++			ret = regulator_enable(dtdata->vdd_io_vreg);
++			if (ret) {
++				input_err(true, dev, "[TKEY] %s: iovdd reg enable fail\n",
++					__func__);
++			}
++		}
++
++	}
++
++	dtdata->power = abov_power;
++
++	return ret;
++}
++
++#ifdef CONFIG_OF
++static int abov_parse_dt(struct device *dev,
++			struct abov_ft1604_devicetree_data *dtdata)
++{
++	struct device_node *np = dev->of_node;
++
++	dtdata->gpio_rst = of_get_named_gpio(np, "abov,rst-gpio", 0);
++	if(dtdata->gpio_rst < 0){
++		input_err(true, dev, "unable to get gpio_rst\n");
++	}
++
++	dtdata->gpio_en = of_get_named_gpio(np, "abov,tkey_en-gpio", 0);
++	if(dtdata->gpio_en < 0){
++		input_err(true, dev, "unable to get gpio_en\n");
++		return dtdata->gpio_en;
++	}
++
++	dtdata->gpio_int = of_get_named_gpio(np, "abov,irq-gpio", 0);
++	if(dtdata->gpio_int < 0){
++		input_err(true, dev, "unable to get gpio_int\n");
++		return dtdata->gpio_int;
++	}
++
++	dtdata->gpio_scl = of_get_named_gpio(np, "abov,scl-gpio", 0);
++	if(dtdata->gpio_scl < 0){
++		input_err(true, dev, "unable to get gpio_scl\n");
++		return dtdata->gpio_scl;
++	}
++
++	dtdata->gpio_sda = of_get_named_gpio(np, "abov,sda-gpio", 0);
++	if(dtdata->gpio_sda < 0){
++		input_err(true, dev, "unable to get gpio_sda\n");
++		return dtdata->gpio_sda;
++	}
++
++	dtdata->bringup = of_property_read_bool(np, "abov,bringup");
++	if (dtdata->bringup < 0)
++		dtdata->bringup = 0;
++
++	dtdata->vdd_io_alwayson = of_property_read_bool(np, "abov,vddo_alwayson");
++	if(dtdata->vdd_io_alwayson < 0){
++		input_err(true, dev, "unable to get vdd_io_alwayson\n");
++		dtdata->vdd_io_alwayson = 0;
++	}
++
++	dtdata->gpio_tkey_led_en = of_get_named_gpio(np, "abov,tkey_led_en-gpio", 0);
++	if(dtdata->gpio_tkey_led_en < 0){
++		input_err(true, dev, "unable to get gpio_tkey_led_en...ignoring\n");
++	}
++
++	dtdata->reverse_key = of_property_read_bool(np, "abov,reverse_key");
++	if(dtdata->reverse_key < 0){
++		dtdata->reverse_key = false;
++	}
++
++	of_property_read_string(np, "abov,firmware_name", &dtdata->fw_name);
++
++	input_info(true, dev, "%s: gpio_en:%d, gpio_int:%d, gpio_scl:%d,"
++		" gpio_sda:%d, gpio_led_en:%d, vdd_io:%d, reverse_key:%d, fw_name: %s\n",
++			__func__, dtdata->gpio_en, dtdata->gpio_int, dtdata->gpio_scl,
++			dtdata->gpio_sda, dtdata->gpio_tkey_led_en, dtdata->vdd_io_alwayson,
++			dtdata->reverse_key, dtdata->fw_name);
++
++	return 0;
++}
++#else
++static int abov_parse_dt(struct device *dev,
++			struct abov_ft1604_devicetree_data *dtdata)
++{
++	return -ENODEV;
++}
++#endif
++
++static int abov_tk_probe(struct i2c_client *client,
++				  const struct i2c_device_id *id)
++{
++	struct abov_ft1604_info *info;
++	struct input_dev *input_dev;
++	int ret = 0;
++
++	input_err(true, &client->dev, "%s++\n", __func__);
++
++	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
++		input_err(true, &client->dev,
++			"i2c_check_functionality fail\n");
++		return -EIO;
++	}
++
++#ifndef LED_TWINKLE_BOOTING
++	if (get_lcd_attached("GET") == 0) {
++		input_err(true, &client->dev,
++			"%s : LCD is not attached\n", __func__);
++		return -ENODEV;
++	}
++#endif
++
++	info = kzalloc(sizeof(struct abov_ft1604_info), GFP_KERNEL);
++	if (!info) {
++		input_err(true, &client->dev, "Failed to allocate memory\n");
++		ret = -ENOMEM;
++		goto err_alloc;
++	}
++
++	input_dev = input_allocate_device();
++	if (!input_dev) {
++		input_err(true, &client->dev,
++			"Failed to allocate memory for input device\n");
++		ret = -ENOMEM;
++		goto err_input_alloc;
++	}
++
++	info->client = client;
++	info->input_dev = input_dev;
++	info->probe_done = false;
++
++	if (client->dev.of_node) {
++		struct abov_ft1604_devicetree_data *dtdata;
++		dtdata = devm_kzalloc(&client->dev,
++			sizeof(struct abov_ft1604_devicetree_data), GFP_KERNEL);
++		if (!dtdata) {
++			input_err(true, &client->dev, "Failed to allocate memory\n");
++			ret = -ENOMEM;
++			goto err_config;
++		}
++
++		ret = abov_parse_dt(&client->dev, dtdata);
++		if (ret)
++			goto err_config;
++
++		info->dtdata = dtdata;
++	} else
++		info->dtdata = client->dev.platform_data;
++
++	if (info->dtdata == NULL) {
++		input_err(true, &client->dev, "failed to get platform data\n");
++		goto err_config;
++	}
++
++	/* Get pinctrl if target uses pinctrl */
++	info->pinctrl = devm_pinctrl_get(&client->dev);
++	if (IS_ERR(info->pinctrl)) {
++		if (PTR_ERR(info->pinctrl) == -EPROBE_DEFER)
++			goto err_config;
++
++		input_err(true, &client->dev, "%s: Target does not use pinctrl\n", __func__);
++		info->pinctrl = NULL;
++	}
++
++	if (info->pinctrl) {
++		ret = abov_pinctrl_configure(info, true);
++		if (ret)
++			input_err(true, &client->dev, "%s: cannot set ts pinctrl active state\n", __func__);
++	}
++
++	ret = abov_gpio_reg_init(&client->dev, info->dtdata);
++	if(ret){
++		input_err(true, &client->dev, "failed to init reg\n");
++		goto pwr_config;
++	}
++	if (info->dtdata->power)
++		info->dtdata->power(info->dtdata, true);
++
++	info->irq = -1;
++	mutex_init(&info->lock);
++
++	abov_tk_reset_for_bootmode(info);
++	msleep(ABOV_RESET_DELAY);
++
++	info->touchkey_count = sizeof(touchkey_keycode) / sizeof(int);
++	i2c_set_clientdata(client, info);
++
++	ret = abov_tk_fw_check(info);
++	if (ret) {
++		input_err(true, &client->dev,
++			"failed to firmware check (%d)\n", ret);
++		goto err_reg_input_dev;
++	}
++
++	snprintf(info->phys, sizeof(info->phys),
++		 "%s/input0", dev_name(&client->dev));
++	input_dev->name = "sec_touchkey";
++	input_dev->phys = info->phys;
++	input_dev->id.bustype = BUS_HOST;
++	input_dev->dev.parent = &client->dev;
++	input_dev->open = abov_tk_input_open;
++	input_dev->close = abov_tk_input_close;
++
++	set_bit(EV_KEY, input_dev->evbit);
++	set_bit(KEY_RECENT, input_dev->keybit);
++	set_bit(KEY_BACK, input_dev->keybit);
++	set_bit(EV_LED, input_dev->evbit);
++	set_bit(LED_MISC, input_dev->ledbit);
++	input_set_drvdata(input_dev, info);
++
++	ret = input_register_device(input_dev);
++	if (ret) {
++		input_err(true, &client->dev, "failed to register input dev (%d)\n",
++			ret);
++		goto err_reg_input_dev;
++	}
++
++#ifdef CONFIG_INPUT_BOOSTER
++	info->tkey_booster = input_booster_allocate(INPUT_BOOSTER_ID_TKEY);
++	if (!info->tkey_booster) {
++		input_err(true, &client->dev,
++			"%s [ERROR] failed to allocate input booster\n", __func__);
++		goto err_alloc_booster_failed;
++	}
++#endif
++
++	info->enabled = true;
++
++	if (!info->dtdata->irq_flag) {
++		input_err(true, &client->dev, "no irq_flag\n");
++		ret = request_threaded_irq(client->irq, NULL, abov_tk_interrupt,
++			IRQF_TRIGGER_LOW | IRQF_ONESHOT, ABOV_TK_NAME, info);
++	} else {
++		ret = request_threaded_irq(client->irq, NULL, abov_tk_interrupt,
++			info->dtdata->irq_flag, ABOV_TK_NAME, info);
++	}
++	if (ret < 0) {
++		input_err(true, &client->dev, "Failed to register interrupt\n");
++		goto err_req_irq;
++	}
++	info->irq = client->irq;
++
++	sec_touchkey = sec_device_create(0, info, "sec_touchkey");
++	if (IS_ERR(sec_touchkey))
++		input_err(true, &client->dev,
++		"Failed to create device for the touchkey sysfs\n");
++
++	ret = sysfs_create_group(&sec_touchkey->kobj,
++		&sec_touchkey_attr_group);
++	if (ret)
++		input_err(true, &client->dev, "Failed to create sysfs group\n");
++
++	ret = sysfs_create_link(&sec_touchkey->kobj,
++		&info->input_dev->dev.kobj, "input");
++	if (ret < 0) {
++		input_err(true, &info->client->dev,
++			"%s: Failed to create input symbolic link\n",
++			__func__);
++	}
++	if(info->dtdata->gpio_tkey_led_en >= 0)
++	gpio_direction_output(info->dtdata->gpio_tkey_led_en, 0);
++
++#ifdef LED_TWINKLE_BOOTING
++	if (get_lcd_attached("GET") == 0) {
++		input_err(true, &client->dev,
++			"%s : LCD is not connected. so start LED twinkle \n", __func__);
++		INIT_DELAYED_WORK(&info->led_twinkle_work, led_twinkle_work);
++		info->led_twinkle_check =  1;
++		schedule_delayed_work(&info->led_twinkle_work, msecs_to_jiffies(400));
++	}
++#endif
++
++	input_err(true, &client->dev, "%s done\n", __func__);
++	info->probe_done = true;
++
++	return 0;
++
++err_req_irq:
++#ifdef CONFIG_INPUT_BOOSTER
++	input_booster_free(info->tkey_booster);
++	info->tkey_booster = NULL;
++err_alloc_booster_failed:
++#endif
++	input_unregister_device(input_dev);
++err_reg_input_dev:
++	mutex_destroy(&info->lock);
++pwr_config:
++err_config:
++	input_free_device(input_dev);
++err_input_alloc:
++	kfree(info);
++err_alloc:
++	return ret;
++
++}
++
++#ifdef LED_TWINKLE_BOOTING
++static void led_twinkle_work(struct work_struct *work)
++{
++	struct abov_ft1604_info *info = container_of(work, struct abov_ft1604_info,
++						led_twinkle_work.work);
++	static bool led_on = 1;
++	static int count = 0;
++	input_err(true, &info->client->dev, "%s, on=%d, c=%d\n",__func__, led_on, count++ );
++
++	if(info->led_twinkle_check == 1){
++		touchkey_led_set(info, led_on);
++
++		if (led_on)
++			led_on = 0;
++		else
++			led_on = 1;
++
++		schedule_delayed_work(&info->led_twinkle_work, msecs_to_jiffies(400));
++	}
++	else {
++		if(led_on == 0)
++			touchkey_led_set(info, 0);
++	}
++}
++#endif
++
++static int abov_tk_remove(struct i2c_client *client)
++{
++	struct abov_ft1604_info *info = i2c_get_clientdata(client);
++
++	if (info->enabled)
++		info->dtdata->power(info->dtdata, false);
++
++	info->enabled = false;
++	if (info->irq >= 0)
++		free_irq(info->irq, info);
++	input_unregister_device(info->input_dev);
++	input_free_device(info->input_dev);
++#ifdef CONFIG_INPUT_BOOSTER
++	input_booster_free(info->tkey_booster);
++	info->tkey_booster = NULL;
++#endif
++	kfree(info);
++
++	return 0;
++}
++
++static void abov_tk_shutdown(struct i2c_client *client)
++{
++	struct abov_ft1604_info *info = i2c_get_clientdata(client);
++	u8 cmd = CMD_LED_OFF;
++
++	info->enabled = false;
++
++	abov_tk_i2c_write(client, ABOV_BTNSTATUS, &cmd, 1);
++}
++
++static int abov_tk_suspend(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct abov_ft1604_info *info = i2c_get_clientdata(client);
++
++	if (!info->enabled)
++		return 0;
++
++	input_info(true, &info->client->dev, "%s: users=%d\n", __func__,
++		   info->input_dev->users);
++
++	disable_irq(info->irq);
++	info->enabled = false;
++	release_all_fingers(info);
++
++	if (info->dtdata->power)
++		info->dtdata->power(info->dtdata, false);
++
++	if (gpio_get_value(info->dtdata->gpio_en))
++		gpio_direction_output(info->dtdata->gpio_en, 0);
++
++	abov_pinctrl_configure(info, 0);
++
++	return 0;
++}
++
++static int abov_tk_resume(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct abov_ft1604_info *info = i2c_get_clientdata(client);
++	u8 led_data;
++
++	if (!info->probe_done)
++		return 0;
++
++	if (info->enabled)
++		return 0;
++
++	input_info(true, &info->client->dev, "%s: users=%d\n", __func__,
++		   info->input_dev->users);
++
++	abov_pinctrl_configure(info, 1);
++
++	gpio_direction_output(info->dtdata->gpio_en, 1);
++
++	if (info->dtdata->power)
++		info->dtdata->power(info->dtdata, true);
++	else
++		get_tk_fw_version(info, true);
++
++	msleep(ABOV_RESET_DELAY);
++
++	info->enabled = true;
++
++#ifdef GLOVE_MODE
++	if (info->glovemode)
++		abov_glove_mode_enable(client, CMD_GLOVE_ON);
++#endif
++
++	if (abov_touchled_cmd_reserved && abov_touchkey_led_status == CMD_LED_ON ) {
++		abov_touchled_cmd_reserved = 0;
++		led_data=abov_touchkey_led_status;
++
++		if(info->dtdata->gpio_tkey_led_en >= 0)
++			gpio_direction_output(info->dtdata->gpio_tkey_led_en,1);
++		abov_tk_i2c_write(client, ABOV_BTNSTATUS, &led_data, 1);
++
++		input_info(true, &info->client->dev, "%s: LED reserved %s\n",
++			__func__, (led_data == CMD_LED_ON) ? "on" : "off");
++	}
++	enable_irq(info->irq);
++
++	return 0;
++}
++
++static int abov_tk_input_open(struct input_dev *dev)
++{
++	struct abov_ft1604_info *info = input_get_drvdata(dev);
++
++	//gpio_direction_input(info->dtdata->gpio_scl);
++	//gpio_direction_input(info->dtdata->gpio_sda);
++
++	abov_tk_resume(&info->client->dev);
++
++	return 0;
++}
++static void abov_tk_input_close(struct input_dev *dev)
++{
++	struct abov_ft1604_info *info = input_get_drvdata(dev);
++
++#ifdef LED_TWINKLE_BOOTING
++	info->led_twinkle_check = 0;
++#endif
++	abov_tk_suspend(&info->client->dev);
++	//gpio_set_value(info->dtdata->gpio_scl, 1);
++	//gpio_set_value(info->dtdata->gpio_sda, 1);
++}
++
++static const struct i2c_device_id abov_tk_id[] = {
++	{ABOV_TK_NAME, 0},
++	{}
++};
++
++MODULE_DEVICE_TABLE(i2c, abov_tk_id);
++
++#ifdef CONFIG_OF
++static struct of_device_id abov_match_table[] = {
++	{ .compatible = "abov,mc96ft16xx",},
++	{ },
++};
++#else
++#define abov_match_table NULL
++#endif
++
++static struct i2c_driver abov_tk_driver = {
++	.probe = abov_tk_probe,
++	.remove = abov_tk_remove,
++	.shutdown = abov_tk_shutdown,
++	.driver = {
++		   .name = ABOV_TK_NAME,
++		   .of_match_table = abov_match_table,
++	},
++	.id_table = abov_tk_id,
++};
++
++static int __init touchkey_init(void)
++{
++	pr_err("%s %s: abov,mc96ft16xx\n", SECLOG, __func__);
++#if defined(CONFIG_SAMSUNG_LPM_MODE)
++	if (poweroff_charging) {
++		pr_notice("%s %s : LPM Charging Mode!!\n", SECLOG, __func__);
++		return 0;
++	}
++#endif
++
++	return i2c_add_driver(&abov_tk_driver);
++}
++
++static void __exit touchkey_exit(void)
++{
++	i2c_del_driver(&abov_tk_driver);
++}
++
++module_init_async(touchkey_init);
++module_exit(touchkey_exit);
++
++/* Module information */
++MODULE_AUTHOR("Samsung Electronics");
++MODULE_DESCRIPTION("Touchkey driver for Abov MF16xx chip");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/input/keyboard/abov_touchkey_sec.c b/drivers/input/keyboard/abov_touchkey_sec.c
+new file mode 100644
+index 0000000..b395e00
+--- /dev/null
++++ b/drivers/input/keyboard/abov_touchkey_sec.c
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * abov_touchkey_sec.c — C7ROM port shim 实现
++ *
++ * 见 include/linux/sec_class.h。三星原厂用 sec_class 把触摸键的 factory 属性
++ * 暴露给自家测试 App；AOSP 侧我们只需要一个能挂 sysfs 节点的 device。
++ */
++#include <linux/module.h>
++#include <linux/device.h>
++#include <linux/sec_class.h>
++
++struct class *sec_class;
++EXPORT_SYMBOL_GPL(sec_class);
++
++static int __init sec_class_init(void)
++{
++	sec_class = class_create(THIS_MODULE, "sec");
++	if (IS_ERR(sec_class)) {
++		pr_err("C7ROM: failed to create sec class\n");
++		return PTR_ERR(sec_class);
++	}
++	return 0;
++}
++subsys_initcall(sec_class_init);
++
++struct device *sec_device_create(void *drvdata, void *dev, const char *name)
++{
++	if (!sec_class)
++		return ERR_PTR(-ENODEV);
++	return device_create(sec_class, NULL, 0, drvdata, "%s", name);
++}
++EXPORT_SYMBOL_GPL(sec_device_create);
+diff --git a/include/linux/async_initcall.h b/include/linux/async_initcall.h
+new file mode 100644
+index 0000000..0ef9da2
+--- /dev/null
++++ b/include/linux/async_initcall.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * async_initcall.h — C7ROM port shim
++ *
++ * 三星驱动里的 module_init_async() 原本是把 initcall 放到异步队列，
++ * AOSP 4.9 没有这套机制；直接退化成普通 module_init 即可（行为等价，只是同步注册）。
++ */
++#ifndef _LINUX_ASYNC_INITCALL_H
++#define _LINUX_ASYNC_INITCALL_H
++
++#include <linux/module.h>
++
++#define module_init_async(fn)	module_init(fn)
++
++#endif /* _LINUX_ASYNC_INITCALL_H */
+diff --git a/include/linux/sec_class.h b/include/linux/sec_class.h
+new file mode 100644
+index 0000000..90ebb83
+--- /dev/null
++++ b/include/linux/sec_class.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * sec_class.h — C7ROM port shim
++ *
++ * 三星私有 sec_class/sec_device_create 的极简替代实现，让从 3.18 移植过来的
++ * 三星驱动（如 abov_touchkey_16xx.c）能在 AOSP 4.9 内核里编过并正常工作：
++ * 只提供"创建一个 class + 一个 device 节点"的最小能力，
++ * 三星原厂的 factory/自检 sysfs 属性会挂在这个 device 下（不影响功能）。
++ */
++#ifndef _LINUX_SEC_CLASS_H
++#define _LINUX_SEC_CLASS_H
++
++#include <linux/device.h>
++
++extern struct class *sec_class;
++
++struct device *sec_device_create(void *drvdata, void *dev, const char *name);
++
++/*
++ * 三星驱动普遍用 SECLOG 作为日志前缀（原在三星自己的 sec_debug.h 里，
++ * 而那个头文件在驱动里是 #ifdef CONFIG_TOUCHSCREEN_DUMP_MODE 才包含的，
++ * 这里补上以免驱动编不过）。
++ */
++#ifndef SECLOG
++#define SECLOG	"sec"
++#endif
++
++
++/*
++ * 三星在自家 include/linux/input.h 里加的三个日志宏（AOSP 4.9 没有）。
++ * 调用形式是 input_err(bool cond, struct device *dev, fmt, ...)：
++ * cond 为真才打印。这里按同样语义重实现。
++ */
++#ifndef input_err
++#define input_err(cond, dev, fmt, ...)		do { if (cond) dev_err(dev, fmt, ##__VA_ARGS__); } while (0)
++#define input_info(cond, dev, fmt, ...)		do { if (cond) dev_info(dev, fmt, ##__VA_ARGS__); } while (0)
++#define input_dbg(cond, dev, fmt, ...)		do { if (cond) dev_dbg(dev, fmt, ##__VA_ARGS__); } while (0)
++#endif
++
++/* 三星自定义的 RECENT 键（AOSP 4.9 的 input-event-codes.h 里没有） */
++#ifndef KEY_RECENT
++#define KEY_RECENT		254
++#endif
++
++#endif /* _LINUX_SEC_CLASS_H */

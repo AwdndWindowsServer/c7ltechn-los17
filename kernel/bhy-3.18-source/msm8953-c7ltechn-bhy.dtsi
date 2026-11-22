@@ -1,0 +1,29 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * C7 (SM-C7000) 的传感器中枢（Bosch BHI）—— 取自三星 3.18
+ * arch/arm64/boot/dts/samsung/msm8953/msm8953-sec-c7lte_chn-r04.dts 的 bhy@28 节点，
+ * 只把总线 pinctrl 补成 4.9 的写法（三星原文件把 pinctrl 放在 i2c_5 节点里）。
+ *
+ * 总线：BLSP2 QUP1（i2c_5，gpio18/19）  中断：gpio42
+ * 传感器 LDO 使能：gpio66（bhy,ldo_enable，同时给 i2c_5 挂 sensor_ldo_en_default）
+ * 驱动：drivers/misc/bhy/{bhy_i2c.c,bhy_core.c,bstclass.c}（CONFIG_SENSORS_BHI）
+ * 用户态：C7 原厂 HAL vendor/lib(64)/hw/sensors.msm8953.so + vendor/bhy_firmware/
+ *        （两者都已由 port/30-assemble-system.sh 注入，所以内核侧必须配套）
+ */
+&i2c_5 {
+	status = "okay";
+	pinctrl-names = "i2c_active", "i2c_sleep";
+	pinctrl-0 = <&i2c_5_active &sensor_ldo_en_default>;
+	pinctrl-1 = <&i2c_5_sleep>;
+
+	bhy@28 {
+		compatible = "bhy";
+		reg = <0x28>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <42 0>;
+		bhy,gpio_irq = <&tlmm 42 0x00>;
+		bhy,ldo_enable = <&tlmm 66 0x01>;
+		bhy,i2c-pull-up = <1>;
+		bhy,acc-axis = <0>;
+	};
+};

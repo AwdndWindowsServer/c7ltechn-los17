@@ -1,0 +1,99 @@
+# =============================================================================
+#  c7lte-defconfig.fragment — C7 (SM-C7000 / c7ltechn) 的 4.9 内核配置目标
+#
+#  这些符号**不是猜的**：C7 硬件相关部分全部来自三星 3.18 内核里 C7 国行真正的
+#  设备配置 `arch/arm/configs/msm8953_sec_msm895332lte_chn_defconfig`
+#  （已存为 kernel/c7-reference-defconfig-3.18.txt，可逐条核对）。
+#
+#  用法：以 4.9 树的 mido_defconfig 为底，跑一遍 menuconfig/savedefconfig，
+#        把下面的项逐条打开；驱动搬进 4.9 树之后符号才会存在。
+# =============================================================================
+
+# ---------------------------------------------------------------- Android 15 必需
+CONFIG_ANDROID=y
+CONFIG_ANDROID_BINDER_IPC=y
+CONFIG_ANDROID_BINDERFS=y                 # A15 的 init 需要
+CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"
+CONFIG_BPF_SYSCALL=y
+CONFIG_BPF_JIT=y
+CONFIG_HAVE_EBPF_JIT=y
+CONFIG_CGROUP_BPF=y                       # netd 的 per-cgroup eBPF（4.10+ 才有；4.9 需 backport 或退化）
+CONFIG_CGROUPS=y
+CONFIG_CGROUP_FREEZER=y
+CONFIG_MEMFD_CREATE=y
+CONFIG_ION=y                              # LOS 22.2 的 msm8953 仍用 ION（不走 DMA-BUF heaps）
+CONFIG_ION_MSM=y
+CONFIG_DMABUF_HEAPS=n
+
+# ---------------------------------------------------------------- 芯片平台
+CONFIG_ARCH_QCOM=y
+CONFIG_ARCH_MSM8953=y                     # 依 4.9 树实际符号名
+CONFIG_ARM64=y
+CONFIG_ARM64_VA_BITS_39=y
+
+# =============================================================================
+#  以下为 C7 精确硬件（★ = 三星私有驱动，必须从 3.18 树移植）
+# =============================================================================
+
+# ---- 显示：三星 AMOLED 面板（C7 r04 = S6E3FA3_AMS598KH01）★ ----
+CONFIG_PANEL_S6E3FA3_AMS598KH01_FHD=y
+CONFIG_PANEL_S6E3FA3_AMS568HN31_FHD=y     # 另一版本面板，建议一起编进来
+CONFIG_FB_MSM_MDSS_SAMSUNG=y
+CONFIG_FB_MSM_MDSS=y
+CONFIG_DRM_MSM=n                          # 走三星 fbdev/mdss 路线（路线 A），不要同时开 DRM
+
+# ---- 触摸：MELFAS MMS449 + ABOV 触摸键 ★ ----
+#    驱动程序符号是 16XX（不是 18XX）；已由补丁 0004 移植并在 4.9 上编译通过
+CONFIG_KEYBOARD_ABOV_TOUCH_16XX=y
+#    MMS449 驱动不在公开三星 3.18 树里，需从别的三星机型内核取 mms_ts 后再打开：
+# CONFIG_TOUCHSCREEN_MELFAS_MMS449=y
+
+# ---- 指纹：VFS7xxx（SPI4，GPIO12-15）★ ----
+CONFIG_SENSORS_FINGERPRINT=y
+CONFIG_SENSORS_FINGERPRINT_SYSFS=y
+CONFIG_SENSORS_VFS7XXX=y
+CONFIG_SENSORS_FP_SPI_NUMBER=4
+CONFIG_SENSORS_FP_SPI_GPIO_START=12
+CONFIG_SENSORS_FP_SPI_GPIO_END=15
+
+# ---- 传感器中枢：Broadcom BHI + SSC ★ ----
+CONFIG_SENSORS=y
+CONFIG_SENSORS_CORE=y
+CONFIG_SENSORS_SSC=y
+CONFIG_SENSORS_BHI=y
+CONFIG_IIO=y
+CONFIG_IIO_BUFFER=y
+CONFIG_IIO_KFIFO_BUF=y
+CONFIG_IIO_TRIGGER=y
+CONFIG_SENSORS_HALL=y                     # 霍尔（翻盖）
+
+# ---- 电源：SM5705（充电 + 电量计 + MUIC + 闪光灯）★ ----
+CONFIG_MFD_SM5705=y
+CONFIG_BATTERY_SAMSUNG=y
+CONFIG_AFC_CHARGER_MODE=y
+CONFIG_PREVENT_SOC_JUMP=y
+CONFIG_CHARGER_SM5705=y
+CONFIG_FUELGAUGE_SM5705=y
+CONFIG_SW_SELF_DISCHARGING=y
+CONFIG_BATTERY_SWELLING=y
+CONFIG_SEC_MPP_SHARE=y
+CONFIG_SAMSUNG_LPM_MODE=y
+CONFIG_USE_MUIC=y
+CONFIG_MUIC_UNIVERSAL=y
+CONFIG_MUIC_UNIVERSAL_SM5705=y
+CONFIG_MUIC_NOTIFIER=y
+CONFIG_USB_HOST_NOTIFY=y
+CONFIG_LEDS_SM5705=y
+
+# ---- NFC / eSE：三星 NFC + PN548 + eSE P3 ★ ----
+CONFIG_SAMSUNG_NFC=y
+CONFIG_SEC_NFC=y
+CONFIG_ESE_P3=y
+
+# ---- 振动 ----
+CONFIG_MSM_VIBRATOR=y
+
+# ---- 音频：QC codec + TFA9897 功放（3.18 树里的符号名待确认）----
+# CONFIG_SND_SOC_TFA989X=y         # msm-4.9 主线里是 SND_SOC_TFA989X，需与搬过来的驱动对齐
+# CONFIG_SND_SOC_WCD_MBHC=y
+# CONFIG_SND_SOC_MSM8953=y

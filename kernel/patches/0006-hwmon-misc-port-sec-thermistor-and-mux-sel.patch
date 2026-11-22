@@ -1,0 +1,1297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 07:34:15 +0000
+Subject: [PATCH] hwmon/misc: port Samsung sec_thermistor and sec_mux_sel to 4.9
+
+把三星的温度检测链路移植到 4.9（C7 用它读 AP/电池/充电器温度）：
+
+  + drivers/hwmon/sec_thermistor.c     多路热敏电阻驱动（441 行）
+  + drivers/misc/sec_mux_sel.c         PMIC MPP 在多个 ADC 通道间切换（474 行）
+  + include/linux/platform_data/sec_thermistor.h
+  + include/linux/sec_mux_sel.h
+  + include/linux/wakelock.h           ★ 通用 shim（后面 NFC/指纹/eSE 都要用）
+  + arch/arm64/boot/dts/qcom/msm8953-c7ltechn-thermistor.dtsi
+  ~ drivers/hwmon/{Kconfig,Makefile}   SENSORS_SEC_THERMISTOR
+  ~ drivers/misc/{Kconfig,Makefile}    SEC_MUX_SEL
+  ~ arch/arm64/configs/c7ltechn_defconfig  打开上面两项
+  ~ arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts  包含热敏电阻 dtsi
+
+关键点：Linux 4.9 删除了 Android wakelock（改为 wakeup_source），三星驱动大量使用旧 API。
+新增的 include/linux/wakelock.h 用 wakeup_source 做薄封装
+（wake_lock_init->wakeup_source_init、wake_lock->__pm_stay_awake、wake_unlock->__pm_relax、
+ wake_lock_timeout->__pm_wakeup_event），**这是一次性投入，后面 NFC / 指纹 / eSE 都能复用**。
+
+DTS 节点用 C7 的真实标定表（adc_array / temp_array 各 91 点，从 3.18 原文件整段搬过来），
+adc_channel=19、qcom,therm-vadc=<&pm8953_vadc>。
+
+实测结果（Linux 4.9.337 树）：
+  CC  drivers/hwmon/sec_thermistor.o   (162968 bytes)
+  CC  drivers/misc/sec_mux_sel.o       (159712 bytes)    首次编译即通过
+  DTC arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dtb  (248466 bytes)
+  反编译确认 sec_thermistor 节点、compatible "samsung,sec-ap-thermistor"、adc_channel=19 都在
+---
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-thermistor.dtsi b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-thermistor.dtsi
+new file mode 100644
+index 000000000..2fa157bea
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-thermistor.dtsi
+@@ -0,0 +1,37 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * C7 (SM-C7000) 热敏电阻节点 —— 从三星 3.18 msm8953-sec-c7lte_chn-r04.dts 移植。
++ * 驱动：drivers/hwmon/sec_thermistor.c（已一并移植到 4.9），
++ *       mux 切换由 drivers/misc/sec_mux_sel.c 负责（也在本补丁里）。
++ */
++&soc {
++	sec_thermistor {
++		compatible = "samsung,sec-ap-thermistor";
++		qcom,therm-vadc = <&pm8953_vadc>;
++		status = "okay";
++		adc_channel = <19>;
++		adc_array = <25936 26112 26587 26760 27096 27503 27595 27692
++                                         27786 27843 27993 28142 28250 28352 28453 28550
++                                         28684 28796 28940 29055 29180 29363 29468 29595
++                                         29749 29946 30055 30256 30426 30576 30781 30983
++                                         31116 31343 31509 31714 31908 32122 32294 32510
++                                         32719 32878 33117 33307 33513 33768 33992 34193
++                                         34413 34602 34843 35029 35252 35501 35741 35947
++                                         36123 36372 36489 36767 37002 37144 37400 37625
++                                         37735 37946 38060 38282 38493 38640 38778 38976
++                                         39151 39316 39441 39619 39734 39824 40032 40067
++                                         40260 40488 40613 40729 40849 40933 41024 41106
++                                         41199 41285 41347 41612 41695>;
++
++		temp_array = <900 850 800 750 700 650 640 630 620 610
++		        600 590 580 570 560 550 540 530 520 510
++			500 490 480 470 460 450 440 430 420 410
++			400 390 380 370 360 350 340 330 320 310
++			300 290 280 270 260 250 240 230 220 210
++			200 190 180 170 160 150 140 130 120 110
++			100 90 80 70 60 50 40 30 20 10
++			0 (-10) (-20) (-30) (-40) (-50) (-60) (-70) (-80) (-90)
++			(-100) (-110) (-120) (-130) (-140) (-150) (-160) (-170) (-180) (-190)
++			(-200) (-250) (-300)>;
++	};
++};
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+index 06369f533..576395b8d 100644
+--- a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn.dts
+@@ -29,6 +29,9 @@
+ /* ---- C7 电源：SM5705 MUIC/充电/闪光灯（从三星 3.18 移植）---- */
+ #include "msm8953-c7ltechn-sm5705.dtsi"
+ 
++/* ---- C7 热敏电阻（AP/电池温度）---- */
++#include "msm8953-c7ltechn-thermistor.dtsi"
++
+ / {
+ 	model = "Samsung Galaxy C7 (SM-C7000)";
+ 	compatible = "samsung,c7ltechn", "qcom,msm8953-mtp", "qcom,msm8953", "qcom,mtp";
+diff --git a/arch/arm64/configs/c7ltechn_defconfig b/arch/arm64/configs/c7ltechn_defconfig
+index a544a4778..372289c51 100644
+--- a/arch/arm64/configs/c7ltechn_defconfig
++++ b/arch/arm64/configs/c7ltechn_defconfig
+@@ -714,3 +714,5 @@ CONFIG_QMI_ENCDEC=y
+ # 目前只有已确认移植并编译通过的驱动；其它外设驱动落地后逐个加进来
+ # （目标清单见 kernel/c7lte-defconfig.fragment）
+ CONFIG_KEYBOARD_ABOV_TOUCH_16XX=y
++CONFIG_SENSORS_SEC_THERMISTOR=y
++CONFIG_SEC_MUX_SEL=y
+diff --git a/drivers/hwmon/Kconfig b/drivers/hwmon/Kconfig
+index c8174f993..47bee469b 100644
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -1877,4 +1877,11 @@ config SENSORS_ATK0110
+ 
+ endif # ACPI
+ 
++config SENSORS_SEC_THERMISTOR
++	tristate "Samsung sec_thermistor (AP/BAT/CHG temperature)"
++	depends on THERMAL || !THERMAL
++	help
++	  Samsung 的多路热敏电阻驱动（AP / 电池 / 充电器温度），从三星 3.18
++	  内核移植到 4.9。C7 (SM-C7000) 用它的 AP thermistor 节点。
++
+ endif # HWMON
+diff --git a/drivers/hwmon/Makefile b/drivers/hwmon/Makefile
+index 7b9a11315..7a2fe45c4 100644
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -172,4 +172,4 @@ obj-$(CONFIG_SENSORS_QPNP_ADC_CURRENT)	+= qpnp-adc-current.o qpnp-adc-common.o
+ obj-$(CONFIG_PMBUS)		+= pmbus/
+ 
+ ccflags-$(CONFIG_HWMON_DEBUG_CHIP) := -DDEBUG
+-
++obj-$(CONFIG_SENSORS_SEC_THERMISTOR)	+= sec_thermistor.o
+diff --git a/drivers/hwmon/sec_thermistor.c b/drivers/hwmon/sec_thermistor.c
+new file mode 100644
+index 000000000..d58ed8c97
+--- /dev/null
++++ b/drivers/hwmon/sec_thermistor.c
+@@ -0,0 +1,441 @@
++/*
++ * sec_thermistor.c - SEC Thermistor
++ *
++ *  Copyright (C) 2013 Samsung Electronics
++ *  Minsung Kim <ms925.kim@samsung.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ *
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/err.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
++#include <linux/iio/consumer.h>
++#include <linux/platform_data/sec_thermistor.h>
++
++#if defined(CONFIG_SEC_MPP_SHARE)
++#include <linux/sec_mux_sel.h>
++#endif
++
++#include <linux/sec_class.h>
++
++#define ADC_SAMPLING_CNT	7
++
++struct qpnp_vadc_chip *therm_vadc_dev;
++
++struct sec_therm_info {
++	struct device *dev;
++	struct device *hwmon_dev;
++	struct sec_therm_platform_data *pdata;
++	struct qpnp_vadc_chip	*vadc_dev;
++	char name[PLATFORM_NAME_SIZE];
++};
++
++#ifdef CONFIG_OF
++enum sec_thermistor_type {
++	TYPE_SEC_THREM_AP,	/* Close to AP */
++	TYPE_SEC_THREM_PA,	/* Close to PA */
++	TYPE_SEC_THREM_BK,	/* Close to BLANKET */
++	NR_TYPE_SEC_TERM
++};
++
++static const struct platform_device_id sec_thermistor_id[] = {
++	{ "sec-ap-thermistor", TYPE_SEC_THREM_AP },
++	{ "sec-pa-thermistor", TYPE_SEC_THREM_PA },
++	{ "sec-bk-thermistor", TYPE_SEC_THREM_BK },
++	{ },
++};
++
++static const struct of_device_id sec_therm_match[] = {
++	{ .compatible = "samsung,sec-ap-thermistor",
++		.data = &sec_thermistor_id[TYPE_SEC_THREM_AP] },
++	{ .compatible = "samsung,sec-pa-thermistor",
++		.data = &sec_thermistor_id[TYPE_SEC_THREM_PA] },
++	{ .compatible = "samsung,sec-bk-thermistor",
++		.data = &sec_thermistor_id[TYPE_SEC_THREM_BK] },
++	{ },
++};
++MODULE_DEVICE_TABLE(of, sec_therm_match);
++
++static bool sec_therm_single_inst[NR_TYPE_SEC_TERM] = {0,};
++
++static struct sec_therm_platform_data *
++sec_therm_parse_dt(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct sec_therm_platform_data *pdata;
++	u32 len1, len2;
++	int i;
++	u32 adc, temp, channel = 0;
++
++	if (!np)
++		return NULL;
++
++	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
++	if (!pdata)
++		return ERR_PTR(-ENOMEM);
++
++	if (!of_get_property(np, "adc_array", &len1))
++		return ERR_PTR(-ENOENT);
++	if (!of_get_property(np, "temp_array", &len2))
++		return ERR_PTR(-ENOENT);
++
++	of_property_read_u32(np, "adc_channel", &channel);
++
++	pdata->use_mux_sel = !of_property_read_bool(np, "unused_mux_sel");
++
++	if (len1 != len2) {
++		dev_err(&pdev->dev, "%s: invalid array length(%u,%u)\n",
++				__func__, len1, len2);
++		return ERR_PTR(-EINVAL);
++	}
++
++	pdata->adc_channel = channel;
++	pdata->adc_arr_size = len1 / sizeof(u32);
++	pdata->adc_table = devm_kzalloc(&pdev->dev,
++			sizeof(*pdata->adc_table) * pdata->adc_arr_size,
++			GFP_KERNEL);
++	if (!pdata->adc_table)
++		return ERR_PTR(-ENOMEM);
++
++	for (i = 0; i < pdata->adc_arr_size; i++) {
++		if (of_property_read_u32_index(np, "adc_array", i, &adc))
++			return ERR_PTR(-EINVAL);
++		if (of_property_read_u32_index(np, "temp_array", i, &temp))
++			return ERR_PTR(-EINVAL);
++
++		pdata->adc_table[i].adc = (int)adc;
++		pdata->adc_table[i].temperature = (int)temp;
++	}
++
++	return pdata;
++}
++#else
++static struct sec_therm_platform_data *
++sec_therm_parse_dt(struct platform_device *pdev) { return NULL; }
++#endif
++
++static int sec_therm_get_adc_data(struct sec_therm_info *info)
++{
++	int adc_data, adc_ch, use_mux_sel;
++	int adc_max = 0, adc_min = 0, adc_total = 0, rc = 0;
++	int i;
++	struct qpnp_vadc_result result;
++
++	adc_ch = info->pdata->adc_channel;
++	use_mux_sel = info->pdata->use_mux_sel;
++
++	for (i = 0; i < ADC_SAMPLING_CNT; i++) {
++#if defined(CONFIG_SEC_MPP_SHARE)
++	if(use_mux_sel) {
++		if (!strcmp(info->name, "sec-ap-thermistor"))
++			sec_mpp_mux_control(AP_THM_MUX_SEL_NUM, SEC_MUX_SEL_AP_THM, 1);
++		else
++			sec_mpp_mux_control(BLKT_THM_MUX_SEL_NUM, SEC_MUX_SEL_BLKT_THM, 1);
++	}
++#endif
++		rc = qpnp_vadc_read(therm_vadc_dev, adc_ch, &result);
++#if defined(CONFIG_SEC_MPP_SHARE)
++	if(use_mux_sel) {
++		if (!strcmp(info->name, "sec-ap-thermistor"))
++			sec_mpp_mux_control(AP_THM_MUX_SEL_NUM, SEC_MUX_SEL_AP_THM, 0);
++		else
++			sec_mpp_mux_control(BLKT_THM_MUX_SEL_NUM, SEC_MUX_SEL_BLKT_THM, 0);
++	}
++#endif
++
++		if (rc) {
++			pr_err("%s: read fail: AMUX(%d), rc(%d)\n",
++					__func__, adc_ch, rc);
++			return rc;
++		} else if (i == 0) {
++			pr_debug("%s: read: AMUX(%d), adc(%d)\n",
++					__func__, adc_ch, result.adc_code);
++		}
++
++		adc_data = result.adc_code;
++
++		if (i != 0) {
++			if (adc_data > adc_max)
++				adc_max = adc_data;
++			else if (adc_data < adc_min)
++				adc_min = adc_data;
++		} else {
++			adc_max = adc_data;
++			adc_min = adc_data;
++		}
++		adc_total += adc_data;
++	}
++
++	return (adc_total - adc_max - adc_min) / (ADC_SAMPLING_CNT - 2);
++}
++
++static int convert_adc_to_temper(struct sec_therm_info *info, unsigned int adc)
++{
++	int low = 0;
++	int high = 0;
++	int mid = 0;
++	int temp = 0;
++	int temp2 = 0;
++
++	if (!info->pdata->adc_table || !info->pdata->adc_arr_size) {
++		/* using fake temp */
++		return 300;
++	}
++
++	high = info->pdata->adc_arr_size - 1;
++
++	if (info->pdata->adc_table[low].adc >= adc)
++		return info->pdata->adc_table[low].temperature;
++	else if (info->pdata->adc_table[high].adc <= adc)
++		return info->pdata->adc_table[high].temperature;
++
++	while (low <= high) {
++		mid = (low + high) / 2;
++		if (info->pdata->adc_table[mid].adc > adc)
++			high = mid - 1;
++		else if (info->pdata->adc_table[mid].adc < adc)
++			low = mid + 1;
++		else
++			return info->pdata->adc_table[mid].temperature;
++	}
++
++	temp = info->pdata->adc_table[high].temperature;
++
++	temp2 = (info->pdata->adc_table[low].temperature -
++			info->pdata->adc_table[high].temperature) *
++			(adc - info->pdata->adc_table[high].adc);
++
++	temp += temp2 /
++		(info->pdata->adc_table[low].adc -
++			info->pdata->adc_table[high].adc);
++
++	return temp;
++}
++
++static ssize_t sec_therm_show_temperature(struct device *dev,
++				   struct device_attribute *attr,
++				   char *buf)
++{
++	struct sec_therm_info *info = dev_get_drvdata(dev);
++	int adc, temp;
++
++	adc = sec_therm_get_adc_data(info);
++
++	if (adc < 0)
++		return adc;
++	else
++		temp = convert_adc_to_temper(info, adc);
++
++	return sprintf(buf, "%d\n", temp);
++}
++
++static ssize_t sec_therm_show_temp_adc(struct device *dev,
++				   struct device_attribute *attr,
++				   char *buf)
++{
++	struct sec_therm_info *info = dev_get_drvdata(dev);
++	int adc;
++
++	adc = sec_therm_get_adc_data(info);
++
++	return sprintf(buf, "%d\n", adc);
++}
++
++static ssize_t sec_therm_show_name(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	struct sec_therm_info *info = dev_get_drvdata(dev);
++
++	return sprintf(buf, "%s\n", info->name);
++}
++
++static SENSOR_DEVICE_ATTR(temperature, S_IRUGO, sec_therm_show_temperature,
++		NULL, 0);
++static SENSOR_DEVICE_ATTR(temp_adc, S_IRUGO, sec_therm_show_temp_adc, NULL, 0);
++static DEVICE_ATTR(name, S_IRUGO, sec_therm_show_name, NULL);
++
++static struct attribute *sec_therm_attributes[] = {
++	&sensor_dev_attr_temperature.dev_attr.attr,
++	&sensor_dev_attr_temp_adc.dev_attr.attr,
++	&dev_attr_name.attr,
++	NULL
++};
++
++static const struct attribute_group sec_therm_attr_group = {
++	.attrs = sec_therm_attributes,
++};
++
++static struct sec_therm_info *g_ap_therm_info;
++int sec_therm_get_ap_temperature(void)
++{
++	int adc;
++	int temp;
++
++	if (unlikely(!g_ap_therm_info))
++		return -ENODEV;
++
++	adc = sec_therm_get_adc_data(g_ap_therm_info);
++
++	if (adc < 0)
++		return adc;
++	else
++		temp = convert_adc_to_temper(g_ap_therm_info, adc);
++
++	return temp;
++}
++
++static int sec_therm_probe(struct platform_device *pdev)
++{
++	const struct of_device_id *of_id =
++		of_match_device(of_match_ptr(sec_therm_match), &pdev->dev);
++	const struct platform_device_id *pdev_id;
++	struct sec_therm_platform_data *pdata;
++	struct sec_therm_info *info;
++	int ret;
++
++	dev_dbg(&pdev->dev, "%s: SEC Thermistor Driver Loading\n", __func__);
++
++	pdata = sec_therm_parse_dt(pdev);
++	if (IS_ERR(pdata))
++		return PTR_ERR(pdata);
++	else if (pdata == NULL)
++		pdata = pdev->dev.platform_data;
++
++	if (!pdata) {
++		dev_err(&pdev->dev, "No platform init data supplied.\n");
++		return -ENODEV;
++	}
++
++	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
++	if (!info)
++		return -ENOMEM;
++
++	pdev_id = of_id ? of_id->data : platform_get_device_id(pdev);
++
++	info->dev = &pdev->dev;
++	info->pdata = pdata;
++	strlcpy(info->name, pdev_id->name, sizeof(info->name));
++	platform_set_drvdata(pdev, info);
++
++	info->vadc_dev = therm_vadc_dev = qpnp_get_vadc(info->dev, "therm");
++
++	if (IS_ERR(info->vadc_dev)) {
++		ret = PTR_ERR(info->vadc_dev);
++		pr_err("%s: ret(%d)\n", __func__, ret);
++		if (ret != -EPROBE_DEFER)
++			pr_err("vadc property missing\n");
++		else
++			goto err_therm;
++	}
++
++	switch (pdev_id->driver_data) {
++	case TYPE_SEC_THREM_AP:
++	case TYPE_SEC_THREM_PA:
++	case TYPE_SEC_THREM_BK:
++		/* Allow only a single device instance for each device type */
++		if (sec_therm_single_inst[pdev_id->driver_data])
++			return -EPERM;
++		else
++			sec_therm_single_inst[pdev_id->driver_data] = true;
++
++		info->dev = sec_device_create(0, info, pdev_id->name);
++		if (IS_ERR(info->dev)) {
++			dev_err(&pdev->dev, "%s: fail to create sec_dev\n",
++					__func__);
++			return PTR_ERR(info->dev);
++		}
++		break;
++	default:
++		pr_info("%s: Unknown device type: %lu\n", __func__,
++				pdev_id->driver_data);
++		return -EINVAL;
++	}
++
++	ret = sysfs_create_group(&info->dev->kobj, &sec_therm_attr_group);
++	if (ret) {
++		dev_err(info->dev, "failed to create sysfs group\n");
++		goto err_create_sysfs;
++	}
++
++	info->hwmon_dev = hwmon_device_register(info->dev);
++	if (IS_ERR(info->hwmon_dev)) {
++		dev_err(&pdev->dev, "unable to register as hwmon device.\n");
++		ret = PTR_ERR(info->hwmon_dev);
++		goto err_register_hwmon;
++	}
++
++	if (pdev_id->driver_data == TYPE_SEC_THREM_AP)
++		g_ap_therm_info = info;
++
++	dev_info(&pdev->dev, "%s successfully probed.\n", pdev_id->name);
++
++	return 0;
++
++err_register_hwmon:
++	sysfs_remove_group(&info->dev->kobj, &sec_therm_attr_group);
++err_create_sysfs:
++	//	sec_device_destroy(info->dev->devt);
++err_therm:
++	devm_kfree(&pdev->dev, (void*)info);
++	return ret;
++}
++
++static int sec_therm_remove(struct platform_device *pdev)
++{
++	const struct of_device_id *of_id =
++		of_match_device(of_match_ptr(sec_therm_match), &pdev->dev);
++	struct sec_therm_info *info = platform_get_drvdata(pdev);
++	const struct platform_device_id *pdev_id;
++
++	if (!info)
++		return 0;
++
++	pdev_id = of_id ? of_id->data : platform_get_device_id(pdev);
++	if (pdev_id->driver_data == TYPE_SEC_THREM_AP)
++		g_ap_therm_info = NULL;
++
++	hwmon_device_unregister(info->hwmon_dev);
++	sysfs_remove_group(&info->dev->kobj, &sec_therm_attr_group);
++	//	sec_device_destroy(info->dev->devt);
++	platform_set_drvdata(pdev, NULL);
++
++	devm_kfree(&pdev->dev,(void*)info);
++
++	return 0;
++}
++
++static struct platform_driver sec_thermistor_driver = {
++	.driver = {
++		.name = "sec-thermistor",
++		.owner = THIS_MODULE,
++		.of_match_table = of_match_ptr(sec_therm_match),
++	},
++	.probe = sec_therm_probe,
++	.remove = sec_therm_remove,
++};
++
++module_platform_driver(sec_thermistor_driver);
++
++MODULE_DESCRIPTION("SEC Thermistor Driver");
++MODULE_AUTHOR("Minsung Kim <ms925.kim@samsung.com>");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:sec-thermistor");
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index c0b539002..799bf1cae 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -867,3 +867,9 @@ config OKL4_LINK_SHBUF
+ 	  transport. This driver presents the link to Linux as a character device
+ 	  which can be written to or read from to access the shared memory. An ioctl
+ 	  on the device is used to send a virtual interrupt to the partner cell.
++
++config SEC_MUX_SEL
++	tristate "Samsung sec_mux_sel (PMIC MPP ADC mux control)"
++	help
++	  Samsung 用 PMIC MPP 在多个热敏电阻/ADC 通道之间做切换（电池温度、
++	  充电器温度、AP 温度…）。从三星 3.18 内核移植到 4.9。
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 0f4b1b3b6..3dcdb252a 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -85,3 +85,4 @@ $(obj)/lkdtm_rodata_objcopy.o: $(obj)/lkdtm_rodata.o FORCE
+ 	$(call if_changed,objcopy)
+ 
+ obj-$(CONFIG_OKL4_LINK_SHBUF)    += okl4-link-shbuf.o
++obj-$(CONFIG_SEC_MUX_SEL)	+= sec_mux_sel.o
+diff --git a/drivers/misc/sec_mux_sel.c b/drivers/misc/sec_mux_sel.c
+new file mode 100644
+index 000000000..d865029a2
+--- /dev/null
++++ b/drivers/misc/sec_mux_sel.c
+@@ -0,0 +1,474 @@
++/*
++ *  driver/misc/sec_mux_sel.c
++ *  Samsung Mux Selection Driver
++ *
++ *  Copyright (C) 2017 Samsung Electronics
++ *
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/sec_mux_sel.h>
++#include <linux/gpio.h>
++#include <linux/of_gpio.h>
++#include <linux/platform_device.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/wakelock.h>
++
++struct sec_mux_sel_info *mux_sel;
++
++int EAR_ADC_MUX_SEL_NUM;
++int BATT_ID_MUX_SEL_NUM;
++int BATT_THM_MUX_SEL_NUM;
++int CHG_THM_MUX_SEL_NUM;
++int AP_THM_MUX_SEL_NUM;
++int WPC_THM_MUX_SEL_NUM;
++int SLAVE_CHG_THM_MUX_SEL_NUM;
++int BLKT_THM_MUX_SEL_NUM;
++
++/*
++* below data tree description has to be defined in dtsi file 
++* mux_sel {
++* 	compatible = "samsung,sec-mux-sel";
++*	mux_sel,mux_sel_1_en = <1>; // enable to use
++*	mux_sel,mux_sel_1 = <&tlmm 7 0x0>; // gpio number of mux_sel
++*	mux_sel,mux_sel_1_type = <16>; // BATT_THM_MUX_SEL | AP_THM_MUX_SEL, two thermistor outputs 
++*	mux_sel,mux_sel_1_mpp = <4>; // MPP_4, the number of MPP
++*	mux_sel,mux_sel_1_low = <2>; // SEC_MUX_SEL_BATT_THM, selection of mux_sel_1_en low
++*	mux_sel,mux_sel_1_high = <4>; // SEC_MUX_SEL_AP_THM, selection of mux_sel_1_en high
++};
++*/
++
++/*
++* int mux_sel : name of mux_sel
++* int adc_type : refer to eum value of sec_mux_sel_type
++* int mutex_on : mutex on/off value 1 or 0
++* usage : sec_mpp_mux_control(BATT_THM_MUX_SEL_NUM, SEC_MUX_SEL_BATT_THM, 1); // mutex lock
++*         sec_mpp_mux_control(BATT_THM_MUX_SEL_NUM, SEC_MUX_SEL_BATT_THM, 0); // mutex unlock
++*/
++void sec_mpp_mux_control(int mux_sel_n, int adc_type, int mutex_on)
++{
++	int mux_sel_level = 0;
++	
++	pr_debug("%s mux_sel_n = %d,  adc_type = %d, mutex_on = %d \n", __func__, mux_sel_n, adc_type, mutex_on);
++
++	if(mux_sel_n == 0) {
++		pr_err("%s this mux sel number dose not exist \n" , __func__);
++		return;	
++	}
++
++	if(mux_sel == NULL) {
++		pr_err("%s driver is not probed \n" , __func__);
++		return;
++	}
++
++	if (mutex_on) {
++		mutex_lock(&mux_sel->mpp_share_mutex);
++
++		switch(mux_sel_n) {
++			case SEC_MUX_SEL_1:
++				if(mux_sel->pdata->mux_sel_1_en) {
++					if(adc_type == mux_sel->pdata->mux_sel_1_low)
++						mux_sel_level = 0;
++					else if(adc_type == mux_sel->pdata->mux_sel_1_high)
++						mux_sel_level = 1;
++					else {
++						pr_info("%s wrong adc_type (%d)!! \n", __func__, adc_type);
++						break;
++					}
++					gpio_direction_output(mux_sel->pdata->mux_sel_1, mux_sel_level);
++					//pr_info("%s: [mux_sel_1] level : %d(%d), mutex status : %d\n", __func__, mux_sel_level, gpio_get_value(mux_sel->pdata->mux_sel_1), mutex_on);					
++				}
++				break;
++			case SEC_MUX_SEL_2:
++				if(mux_sel->pdata->mux_sel_2_en) {
++					if(adc_type == mux_sel->pdata->mux_sel_2_low)
++						mux_sel_level = 0;
++					else if(adc_type == mux_sel->pdata->mux_sel_2_high)
++						mux_sel_level = 1;
++					else {
++						pr_info("%s wrong adc_type (%d)!! \n", __func__, adc_type);
++						break;
++					}
++					gpio_direction_output(mux_sel->pdata->mux_sel_2, mux_sel_level);
++					//pr_info("%s: [mux_sel_2] level : %d(%d), mutex status : %d\n", __func__, mux_sel_level, gpio_get_value(mux_sel->pdata->mux_sel_2), mutex_on);					
++				}
++				break;
++			case SEC_MUX_SEL_3:
++				if(mux_sel->pdata->mux_sel_3_en) {
++					if(adc_type == mux_sel->pdata->mux_sel_3_low)
++						mux_sel_level = 0;
++					else if(adc_type == mux_sel->pdata->mux_sel_3_high)
++						mux_sel_level = 1;
++					else {
++						pr_info("%s wrong adc_type (%d)!! \n", __func__, adc_type);
++						break;
++					}
++					gpio_direction_output(mux_sel->pdata->mux_sel_3, mux_sel_level);
++					//pr_info("%s: [mux_sel_3] level : %d(%d), mutex status : %d\n", __func__, mux_sel_level, gpio_get_value(mux_sel->pdata->mux_sel_3), mutex_on);					
++				}
++				break;
++			default:
++				dev_err(mux_sel->dev,
++					"%s: Invalid mux sel\n", __func__);
++				break;				
++		}
++	} else {
++		pr_debug("%s: MPP mux_sel : %d, ml : %d\n", __func__, mux_sel_level, mutex_on);
++		mutex_unlock(&mux_sel->mpp_share_mutex);
++	}
++}
++EXPORT_SYMBOL_GPL(sec_mpp_mux_control);
++
++static int sec_mux_sel_parse_dt(struct device *dev,
++		struct sec_mux_sel_info *mux_sel)
++{
++	struct device_node *np = of_find_node_by_name(NULL, "mux_sel");
++	sec_mux_sel_platform_data_t *pdata = mux_sel->pdata;
++	int ret;
++
++	if (!np) {
++		pr_info("%s: np NULL\n", __func__);
++		return 1;
++	}
++
++	pdata->mux_sel_1_en = of_property_read_bool(np,
++		"mux_sel,mux_sel_1_en");
++	pr_info("%s: mux_sel_1_en: %d \n", __func__, pdata->mux_sel_1_en);
++
++	if(pdata->mux_sel_1_en) {
++		pdata->mux_sel_1 = of_get_named_gpio(np, "mux_sel,mux_sel_1", 0);
++		pr_info("%s : mux_sel_1 %d \n", __func__,pdata->mux_sel_1);
++		if (pdata->mux_sel_1 < 0)
++			pdata->mux_sel_1 = 0;
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_1_type",
++			&pdata->mux_sel_1_type);
++		if (ret)
++			pr_info("%s: mux_sel_1_type is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_1_mpp",
++			&pdata->mux_sel_1_mpp);
++		if (ret)
++			pr_info("%s: mux_sel_1_mpp is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_1_low",
++			&pdata->mux_sel_1_low);
++		if (ret)
++			pr_info("%s: mux_sel_1_low is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_1_high",
++			&pdata->mux_sel_1_high);
++		if (ret)
++			pr_info("%s: mux_sel_1_high is Empty\n", __func__);
++
++		pr_info("%s mux_sel_1 = %d, pdata->mux_sel_1_type = %d, mux_sel_1_mpp = %d, mux_sel_1_low = %d, mux_sel_1_high = %d \n",
++			__func__, pdata->mux_sel_1, pdata->mux_sel_1_type, pdata->mux_sel_1_mpp, pdata->mux_sel_1_low, pdata->mux_sel_1_high);
++	}
++
++	pdata->mux_sel_2_en = of_property_read_bool(np,
++		"mux_sel,mux_sel_2_en");
++	pr_info("%s: mux_sel_2_en: %d \n", __func__, pdata->mux_sel_2_en);
++
++	if(pdata->mux_sel_2_en) {	
++		pdata->mux_sel_2 = of_get_named_gpio(np, "mux_sel,mux_sel_2", 0);
++		pr_info("%s : mux_sel_2 %d \n", __func__,pdata->mux_sel_2);
++		if (pdata->mux_sel_2 < 0)
++			pdata->mux_sel_2 = 0;
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_2_type",
++			&pdata->mux_sel_2_type);
++		if (ret)
++			pr_info("%s: mux_sel_2_type is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_2_mpp",
++			&pdata->mux_sel_2_mpp);
++		if (ret)
++			pr_info("%s: mux_sel_2_mpp is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_2_low",
++			&pdata->mux_sel_2_low);
++		if (ret)
++			pr_info("%s: mux_sel_2_low is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_2_high",
++			&pdata->mux_sel_2_high);
++		if (ret)
++			pr_info("%s: mux_sel_2_high is Empty\n", __func__);
++
++		pr_info("%s mux_sel_2 = %d, pdata->mux_sel_2_type = %d, mux_sel_2_mpp = %d, mux_sel_2_low = %d, mux_sel_2_high = %d \n",
++			__func__, pdata->mux_sel_2, pdata->mux_sel_2_type, pdata->mux_sel_2_mpp, pdata->mux_sel_2_low, pdata->mux_sel_2_high);		
++	}
++
++	pdata->mux_sel_3_en = of_property_read_bool(np,
++		"mux_sel,mux_sel_3_en");
++	pr_info("%s: mux_sel_3_en: %d \n", __func__, pdata->mux_sel_3_en);
++
++	if(pdata->mux_sel_3_en) {	
++		pdata->mux_sel_3 = of_get_named_gpio(np, "mux_sel,mux_sel_3", 0);
++		pr_info("%s : mux_sel_3 %d \n", __func__,pdata->mux_sel_3);
++		if (pdata->mux_sel_3 < 0)
++			pdata->mux_sel_3 = 0;
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_3_type",
++			&pdata->mux_sel_3_type);
++		if (ret)
++			pr_info("%s: mux_sel_3_type is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_3_mpp",
++			&pdata->mux_sel_3_mpp);
++		if (ret)
++			pr_info("%s: mux_sel_3_mpp is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_3_low",
++			&pdata->mux_sel_3_low);
++		if (ret)
++			pr_info("%s: mux_sel_3_low is Empty\n", __func__);
++
++		ret = of_property_read_u32(np, "mux_sel,mux_sel_3_high",
++			&pdata->mux_sel_3_high);
++		if (ret)
++			pr_info("%s: mux_sel_3_high is Empty\n", __func__);
++
++		pr_info("%s mux_sel_3 = %d, pdata->mux_sel_3_type = %d, mux_sel_3_mpp = %d, mux_sel_3_low = %d, mux_sel_3_high = %d \n",
++			__func__, pdata->mux_sel_3, pdata->mux_sel_3_type, pdata->mux_sel_3_mpp, pdata->mux_sel_3_low, pdata->mux_sel_3_high);		
++	}
++
++	pr_info("%s: dt load done \n", __func__);
++
++	return 0;
++}
++
++static void sec_mux_sel_get_info(void)
++{
++	int ret = 0;
++
++	EAR_ADC_MUX_SEL_NUM = 0;
++	BATT_ID_MUX_SEL_NUM = 0;
++	BATT_THM_MUX_SEL_NUM = 0;
++	CHG_THM_MUX_SEL_NUM = 0;
++	AP_THM_MUX_SEL_NUM = 0;
++	WPC_THM_MUX_SEL_NUM = 0;
++	SLAVE_CHG_THM_MUX_SEL_NUM = 0;
++	BLKT_THM_MUX_SEL_NUM = 0;
++
++	pr_info("%s mux_sel_1_type = %d, mux_sel_2_type = %d \n", __func__, mux_sel->pdata->mux_sel_1_type, mux_sel->pdata->mux_sel_2_type);
++
++	if (mux_sel->pdata->mux_sel_1_en) {
++		ret = gpio_request(mux_sel->pdata->mux_sel_1, "mux-sel");
++		if (ret) {
++			pr_err("failed to request GPIO %u\n", mux_sel->pdata->mux_sel_1);
++		}
++
++		if (mux_sel->pdata->mux_sel_1_type & EAR_ADC_MUX_SEL)
++			EAR_ADC_MUX_SEL_NUM = SEC_MUX_SEL_1;
++		if (mux_sel->pdata->mux_sel_1_type & BATT_ID_MUX_SEL)
++			BATT_ID_MUX_SEL_NUM = SEC_MUX_SEL_1;
++		if (mux_sel->pdata->mux_sel_1_type & BATT_THM_MUX_SEL)
++			BATT_THM_MUX_SEL_NUM = SEC_MUX_SEL_1;
++		if (mux_sel->pdata->mux_sel_1_type & CHG_THM_MUX_SEL)
++			CHG_THM_MUX_SEL_NUM = SEC_MUX_SEL_1;
++		if (mux_sel->pdata->mux_sel_1_type & SLAVE_CHG_THM_MUX_SEL)
++			SLAVE_CHG_THM_MUX_SEL_NUM = SEC_MUX_SEL_1;
++		if (mux_sel->pdata->mux_sel_1_type & AP_THM_MUX_SEL)
++			AP_THM_MUX_SEL_NUM = SEC_MUX_SEL_1;
++		if (mux_sel->pdata->mux_sel_1_type & WPC_THM_MUX_SEL)
++			WPC_THM_MUX_SEL_NUM = SEC_MUX_SEL_1;
++		if (mux_sel->pdata->mux_sel_1_type & BLKT_THM_MUX_SEL)
++			BLKT_THM_MUX_SEL_NUM = SEC_MUX_SEL_1;
++	}
++
++	if (mux_sel->pdata->mux_sel_2_en) {
++		ret = gpio_request(mux_sel->pdata->mux_sel_2, "mux-sel2");
++		if (ret) {
++			pr_err("failed to request GPIO %u\n", mux_sel->pdata->mux_sel_2);
++		}
++
++		if (mux_sel->pdata->mux_sel_2_type & EAR_ADC_MUX_SEL)
++			EAR_ADC_MUX_SEL_NUM = SEC_MUX_SEL_2;
++		if (mux_sel->pdata->mux_sel_2_type & BATT_ID_MUX_SEL)
++			BATT_ID_MUX_SEL_NUM = SEC_MUX_SEL_2;
++		if (mux_sel->pdata->mux_sel_2_type & BATT_THM_MUX_SEL)
++			BATT_THM_MUX_SEL_NUM = SEC_MUX_SEL_2;
++		if (mux_sel->pdata->mux_sel_2_type & CHG_THM_MUX_SEL)
++			CHG_THM_MUX_SEL_NUM = SEC_MUX_SEL_2;
++		if (mux_sel->pdata->mux_sel_2_type & SLAVE_CHG_THM_MUX_SEL)
++			SLAVE_CHG_THM_MUX_SEL_NUM = SEC_MUX_SEL_2;
++		if (mux_sel->pdata->mux_sel_2_type & AP_THM_MUX_SEL)
++			AP_THM_MUX_SEL_NUM = SEC_MUX_SEL_2;
++		if (mux_sel->pdata->mux_sel_2_type & WPC_THM_MUX_SEL)
++			WPC_THM_MUX_SEL_NUM = SEC_MUX_SEL_2;
++		if (mux_sel->pdata->mux_sel_2_type & BLKT_THM_MUX_SEL)
++			BLKT_THM_MUX_SEL_NUM = SEC_MUX_SEL_2;	
++	}
++
++	if (mux_sel->pdata->mux_sel_3_en) {
++		ret = gpio_request(mux_sel->pdata->mux_sel_2, "mux-sel3");
++		if (ret) {
++			pr_err("failed to request GPIO %u\n", mux_sel->pdata->mux_sel_3);
++		}
++
++		if (mux_sel->pdata->mux_sel_3_type & EAR_ADC_MUX_SEL)
++			EAR_ADC_MUX_SEL_NUM = SEC_MUX_SEL_3;
++		if (mux_sel->pdata->mux_sel_3_type & BATT_ID_MUX_SEL)
++			BATT_ID_MUX_SEL_NUM = SEC_MUX_SEL_3;
++		if (mux_sel->pdata->mux_sel_3_type & BATT_THM_MUX_SEL)
++			BATT_THM_MUX_SEL_NUM = SEC_MUX_SEL_3;
++		if (mux_sel->pdata->mux_sel_3_type & CHG_THM_MUX_SEL)
++			CHG_THM_MUX_SEL_NUM = SEC_MUX_SEL_3;
++		if (mux_sel->pdata->mux_sel_3_type & SLAVE_CHG_THM_MUX_SEL)
++			SLAVE_CHG_THM_MUX_SEL_NUM = SEC_MUX_SEL_3;
++		if (mux_sel->pdata->mux_sel_3_type & AP_THM_MUX_SEL)
++			AP_THM_MUX_SEL_NUM = SEC_MUX_SEL_3;
++		if (mux_sel->pdata->mux_sel_3_type & WPC_THM_MUX_SEL)
++			WPC_THM_MUX_SEL_NUM = SEC_MUX_SEL_3;
++		if (mux_sel->pdata->mux_sel_3_type & BLKT_THM_MUX_SEL)
++			BLKT_THM_MUX_SEL_NUM = SEC_MUX_SEL_3;	
++	}
++	
++	pr_info("%s EAR SEL NUM = %d, BATT ID SEL NUM = %d, BATT SEL NUM = %d, CHG SEL NUM = %d, "
++		"AP SEL NUM = %d, WPC SEL NUM = %d, SLAVE CHG SEL NUM = %d, BLKT CHG SEL NUM = %d\n",
++	__func__,
++	EAR_ADC_MUX_SEL_NUM, 
++	BATT_ID_MUX_SEL_NUM,
++	BATT_THM_MUX_SEL_NUM,
++	CHG_THM_MUX_SEL_NUM,
++	AP_THM_MUX_SEL_NUM,
++	WPC_THM_MUX_SEL_NUM,
++	SLAVE_CHG_THM_MUX_SEL_NUM,
++	BLKT_THM_MUX_SEL_NUM);
++}
++
++static int sec_mux_sel_probe(struct platform_device *pdev)
++{
++	sec_mux_sel_platform_data_t *pdata = NULL;
++//	struct sec_mux_sel_info *mux_sel;
++	int ret = 0;
++
++	dev_info(&pdev->dev,
++		"%s: SEC Mux Sel Driver Loading\n", __func__);
++
++	mux_sel = kzalloc(sizeof(*mux_sel), GFP_KERNEL);
++	if (!mux_sel)
++		return -ENOMEM;
++
++	if (pdev->dev.of_node) {
++		pdata = devm_kzalloc(&pdev->dev,
++				sizeof(sec_mux_sel_platform_data_t),
++				GFP_KERNEL);
++		if (!pdata) {
++			dev_err(&pdev->dev, "Failed to allocate memory\n");
++			ret = -ENOMEM;
++			goto err_bat_free;
++		}
++
++		mux_sel->pdata = pdata;
++		if (sec_mux_sel_parse_dt(&pdev->dev, mux_sel)) {
++			dev_err(&pdev->dev,
++				"%s: Failed to get mux sel dt\n", __func__);
++			ret = -EINVAL;
++			goto err_bat_free;
++		}
++	} else {
++		pdata = dev_get_platdata(&pdev->dev);
++		mux_sel->pdata = pdata;
++	}
++
++	platform_set_drvdata(pdev, mux_sel);
++	mux_sel->dev = &pdev->dev;
++
++	mutex_init(&mux_sel->mpp_share_mutex);
++	sec_mux_sel_get_info();
++
++	dev_info(mux_sel->dev,
++		"%s: SEC Mux Sel Driver Loaded\n", __func__);
++
++	return 0;
++
++err_bat_free:
++	kfree(mux_sel);
++
++	return ret;
++}
++
++static int sec_mux_sel_remove(struct platform_device *pdev)
++{
++	struct sec_mux_sel_info *mux_sel = platform_get_drvdata(pdev);
++
++	dev_dbg(mux_sel->dev, "%s: Start\n", __func__);
++
++	mutex_destroy(&mux_sel->mpp_share_mutex);
++
++	dev_dbg(mux_sel->dev, "%s: End\n", __func__);
++	kfree(mux_sel);
++
++	return 0;
++}
++
++static int sec_mux_sel_suspend(struct device *dev)
++{
++	return 0;
++}
++
++static int sec_mux_sel_resume(struct device *dev)
++{
++	return 0;
++}
++
++static void sec_mux_sel_shutdown(struct device *dev)
++{
++	return;
++}
++
++#ifdef CONFIG_OF
++static struct of_device_id sec_mux_sel_dt_ids[] = {
++	{ .compatible = "samsung,sec-mux-sel" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sec_mux_sel_dt_ids);
++#endif /* CONFIG_OF */
++
++static const struct dev_pm_ops sec_mux_sel_pm_ops = {
++	.suspend = sec_mux_sel_suspend,
++	.resume = sec_mux_sel_resume,
++};
++
++static struct platform_driver sec_mux_sel_driver = {
++	.driver = {
++		   .name = "sec-mux-sel",
++		   .owner = THIS_MODULE,
++		   .pm = &sec_mux_sel_pm_ops,
++		   .shutdown = sec_mux_sel_shutdown,
++#ifdef CONFIG_OF
++		.of_match_table = sec_mux_sel_dt_ids,
++#endif
++		   },
++	.probe = sec_mux_sel_probe,
++	.remove = sec_mux_sel_remove,
++};
++
++static int __init sec_mux_sel_init(void)
++{
++	int ret;
++
++	pr_info("%s \n", __func__);
++	ret = platform_driver_register(&sec_mux_sel_driver);
++
++	return ret;
++}
++
++static void __exit sec_mux_sel_exit(void)
++{
++	platform_driver_unregister(&sec_mux_sel_driver);
++}
++
++module_init(sec_mux_sel_init);
++module_exit(sec_mux_sel_exit);
++
++MODULE_DESCRIPTION("Samsung MUX SEL Driver");
++MODULE_AUTHOR("Samsung Electronics");
++MODULE_LICENSE("GPL");
+diff --git a/include/linux/platform_data/sec_thermistor.h b/include/linux/platform_data/sec_thermistor.h
+new file mode 100644
+index 000000000..333b04ba5
+--- /dev/null
++++ b/include/linux/platform_data/sec_thermistor.h
+@@ -0,0 +1,51 @@
++/*
++ * sec_thermistor.h - SEC Thermistor
++ *
++ *  Copyright (C) 2013 Samsung Electronics
++ *  Minsung Kim <ms925.kim@samsung.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++#ifndef __LINUX_SEC_THERMISTOR_H
++#define __LINUX_SEC_THERMISTOR_H __FILE__
++
++/* Qualcomm PMIC ADC */
++#include <linux/qpnp/qpnp-adc.h>
++
++/**
++ * struct sec_therm_adc_table - adc to temperature table for sec thermistor
++ * driver
++ * @adc: adc value
++ * @temperature: temperature(C) * 10
++ */
++struct sec_therm_adc_table {
++	int adc;
++	int temperature;
++};
++
++/**
++ * struct sec_bat_plaform_data - init data for sec batter driver
++ * @adc_channel: adc channel that connected to thermistor
++ * @adc_table: array of adc to temperature data
++ * @adc_arr_size: size of adc_table
++ */
++struct sec_therm_platform_data {
++	unsigned int adc_channel;
++	unsigned int use_mux_sel;
++	unsigned int adc_arr_size;
++	struct sec_therm_adc_table *adc_table;
++};
++
++#endif /* __LINUX_SEC_THERMISTOR_H */
+diff --git a/include/linux/sec_mux_sel.h b/include/linux/sec_mux_sel.h
+new file mode 100644
+index 000000000..b581219d0
+--- /dev/null
++++ b/include/linux/sec_mux_sel.h
+@@ -0,0 +1,96 @@
++/*
++ * Copyright (C) 2017 Samsung Electronics, Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++#include <linux/device.h>
++
++#ifndef __ASM_ARCH_SEC_MUX_SEL_H
++#define __ASM_ARCH_SEC_MUX_SEL_H
++
++#ifdef __KERNEL__
++
++struct sec_mux_sel_platform_data {
++	/* callback functions */
++	void (*initial_check)(void);
++
++	bool mux_sel_1_en;
++	bool mux_sel_2_en;
++	bool mux_sel_3_en;
++
++	int mux_sel_1;
++	int mux_sel_2;
++	int mux_sel_3;
++
++	int mux_sel_1_mpp;
++	int mux_sel_2_mpp;
++	int mux_sel_3_mpp;
++
++	int mux_sel_1_low;
++	int mux_sel_2_low;
++	int mux_sel_3_low;
++
++	int mux_sel_1_high;
++	int mux_sel_2_high;
++	int mux_sel_3_high;
++
++	int mux_sel_1_type;
++	int mux_sel_2_type;
++	int mux_sel_3_type;
++};
++
++#define sec_mux_sel_platform_data_t \
++	struct sec_mux_sel_platform_data
++
++struct sec_mux_sel_info {
++	struct device *dev;
++	sec_mux_sel_platform_data_t *pdata;
++	struct mutex mpp_share_mutex;
++};
++
++enum sec_mux_sel {
++	SEC_MUX_SEL_1 = 1,
++	SEC_MUX_SEL_2,
++	SEC_MUX_SEL_3,
++};
++
++enum sec_mux_sel_type {
++	SEC_MUX_SEL_EAR_ADC = 0,
++	SEC_MUX_SEL_BATT_ID,
++	SEC_MUX_SEL_BATT_THM,
++	SEC_MUX_SEL_CHG_THM,
++	SEC_MUX_SEL_AP_THM,
++	SEC_MUX_SEL_WPC_THM,
++	SEC_MUX_SEL_SLAVE_CHG_THM,
++	SEC_MUX_SEL_BLKT_THM, //7
++};
++
++#define EAR_ADC_MUX_SEL 	0x01
++#define BATT_ID_MUX_SEL		0x02
++#define BATT_THM_MUX_SEL	0x04
++#define CHG_THM_MUX_SEL		0x08
++#define AP_THM_MUX_SEL		0x10
++#define WPC_THM_MUX_SEL		0x20
++#define SLAVE_CHG_THM_MUX_SEL	0x40
++#define BLKT_THM_MUX_SEL	0x80
++
++void sec_mpp_mux_control(int mux_sel, int adc_type, int mutex_on);
++
++extern int EAR_ADC_MUX_SEL_NUM;
++extern int BATT_ID_MUX_SEL_NUM;
++extern int BATT_THM_MUX_SEL_NUM;
++extern int CHG_THM_MUX_SEL_NUM;
++extern int AP_THM_MUX_SEL_NUM;
++extern int WPC_THM_MUX_SEL_NUM;
++extern int SLAVE_CHG_THM_MUX_SEL_NUM;
++extern int BLKT_THM_MUX_SEL_NUM;
++#endif
++#endif
+diff --git a/include/linux/wakelock.h b/include/linux/wakelock.h
+new file mode 100644
+index 000000000..93efb682e
+--- /dev/null
++++ b/include/linux/wakelock.h
+@@ -0,0 +1,57 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * wakelock.h — C7ROM port shim
++ *
++ * Linux 4.9 已经删掉了 Android wakelock（改成语义等价的 wakeup_source）。
++ * 三星 3.18 驱动（NFC / 指纹 / eSE / mux_sel …）大量使用旧 API，
++ * 这里用 wakeup_source 做一层薄封装，行为对齐：
++ *   wake_lock_init  -> wakeup_source_init
++ *   wake_lock       -> __pm_stay_awake
++ *   wake_unlock     -> __pm_relax
++ *   wake_lock_timeout -> __pm_wakeup_event
++ */
++#ifndef _LINUX_WAKELOCK_H
++#define _LINUX_WAKELOCK_H
++
++#include <linux/device.h>
++#include <linux/pm_wakeup.h>
++#include <linux/jiffies.h>
++
++#define WAKE_LOCK_SUSPEND	0
++#define WAKE_LOCK_IDLE		1
++
++struct wake_lock {
++	struct wakeup_source ws;
++};
++
++static inline void wake_lock_init(struct wake_lock *lock, int type, const char *name)
++{
++	wakeup_source_init(&lock->ws, name);
++}
++
++static inline void wake_lock_destroy(struct wake_lock *lock)
++{
++	wakeup_source_destroy(&lock->ws);
++}
++
++static inline void wake_lock(struct wake_lock *lock)
++{
++	__pm_stay_awake(&lock->ws);
++}
++
++static inline void wake_unlock(struct wake_lock *lock)
++{
++	__pm_relax(&lock->ws);
++}
++
++static inline void wake_lock_timeout(struct wake_lock *lock, long timeout)
++{
++	__pm_wakeup_event(&lock->ws, jiffies_to_msecs(timeout));
++}
++
++static inline int wake_lock_active(struct wake_lock *lock)
++{
++	return lock->ws.active;
++}
++
++#endif /* _LINUX_WAKELOCK_H */

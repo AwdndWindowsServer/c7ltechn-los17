@@ -1,0 +1,53 @@
+From a5d39fc134517a4f9e3bc71f71f93b0ae705c6a8 Mon Sep 17 00:00:00 2001
+From: C7ROM <c7rom@local>
+Date: Fri, 25 Sep 2026 17:05:00 +0000
+Subject: [PATCH] arm64: dts: qcom: c7ltechn: add the SM5705 fuelgauge node
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+C7 的电量计是软件 I2C 上的独立从机 0x71（compatible "sm5705-fuelgauge,i2c"）。
+三星 3.18 的 r04 DTS 里本来就有这个节点，但补丁 0005 只搬了 MUIC / 充电器 /
+闪光灯，漏了电量计 —— 那样即使驱动编进内核也不会 probe，电池电量就是空的。
+
+节点内容与三星原版逐项一致：
+
+  reg 0x71、中断脚 gpio62（fuel_int_active）、
+  fuel_alert_soc = 1（1% 才告警）、capacity_max = 1000 / margin = 70、
+  capacity_calculation_type = 0x1F，
+  pinctrl 用我们已从 3.18 转换过来的 fg_i2c_active + fuel_int_active。
+---
+ .../boot/dts/qcom/msm8953-c7ltechn-sm5705.dtsi  | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-sm5705.dtsi b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-sm5705.dtsi
+index 4df12cd..139e25b 100644
+--- a/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-sm5705.dtsi
++++ b/arch/arm64/boot/dts/qcom/msm8953-c7ltechn-sm5705.dtsi
+@@ -84,6 +84,23 @@
+ 				timeout = <0xF>;
+ 			};
+ 		};
++
++		/* 电量计：独立 i2c 从机 0x71（三星 3.18 DTS 里就有，补丁 0005 当时漏了它，
++		 * 驱动 drivers/battery/sm5705_fuelgauge.c，compatible 不带 vendor 前缀） */
++		sm5705-fuelgauge@71 {
++			compatible = "sm5705-fuelgauge,i2c";
++			reg = <0x71>;
++			interrupt-parent = <&tlmm>;
++			pinctrl-names = "default";
++			pinctrl-0 = <&fg_i2c_active &fuel_int_active>;
++			fuelgauge,irqf = "IRQF_TRIGGER_FALLING + IRQF_ONESHOT + IRQF_NO_SUSPEND";
++			fuelgauge,fuel_int = <&tlmm 62 0x1>;
++			fuelgauge,fuel_alert_soc = <1>;
++			fuelgauge,capacity_max = <1000>;
++			fuelgauge,capacity_max_margin = <70>;
++			fuelgauge,capacity_min = <0>;
++			fuelgauge,capacity_calculation_type = <0x1F>;
++		};
+ 	};
+ 
+ 	/* MUIC 配件识别表（无 compatible，由 MUIC 驱动按节点名查找） */
+-- 
+2.43.0
+
