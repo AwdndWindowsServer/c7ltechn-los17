@@ -1,0 +1,126 @@
+name: kernel-c7-4.9
+
+# =============================================================================
+#  Samsung Galaxy C7 (SM-C7000 / c7ltechn) 的 Linux 4.9.337 内核
+#
+#  基线：zeelog/android_kernel_xiaomi_mido @ lineage-22.2（同 SoC msm8953）
+#  叠加：kernel/patches/0001..0015（C7 板级 DTS、触摸、指纹、NFC、SM5705、BHI、RT5659）
+#  再跑：tools/panel-framework-setup.sh（三星面板框架 + C7 的 S6E3FA3 AMS598KH01 面板驱动）
+#
+#  产物 artifact：Image.gz-dtb / msm8953-c7ltechn.dtb / modules.tar.gz / build.log
+# =============================================================================
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "基线内核仓库"
+        default: "zeelog/android_kernel_xiaomi_mido"
+      kernel_branch:
+        description: "基线分支"
+        default: "lineage-22.2"
+      defconfig:
+        description: "defconfig"
+        default: "c7ltechn_defconfig"
+      extra_setup:
+        description: "额外内核树准备脚本（空格分隔，来自 tools/；默认面板框架）"
+        default: "panel"
+  push:
+    paths:
+      - "kernel/**"
+      - "tools/panel-*.py"
+      - "tools/panel-framework-setup.sh"
+      - ".github/workflows/kernel.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-c7-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Free disk space（内核构建要 ~15 GB）
+        run: |
+          sudo swapoff -a || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost \
+                      /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules /opt/az || true
+          sudo apt-get clean
+          df -h /
+
+      - uses: actions/checkout@v4
+        with: { path: proj }
+
+      - name: 安装工具链
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            device-tree-compiler bc bison flex libssl-dev libelf-dev cpio xz-utils zip python3
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git /opt/proton-clang
+          /opt/proton-clang/bin/clang --version | head -2
+
+      - name: 克隆基线内核树
+        run: |
+          git clone --depth=1 -b "${{ inputs.kernel_branch || 'lineage-22.2' }}" \
+            "https://github.com/${{ inputs.kernel_repo || 'zeelog/android_kernel_xiaomi_mido' }}.git" kernel
+          cd kernel && git log --oneline -1 && du -sh .
+
+      - name: 应用 C7 补丁（0001..0015）
+        run: |
+          cd kernel
+          git config user.email ci@c7los17; git config user.name ci
+          PDIR="$GITHUB_WORKSPACE/proj/kernel/patches"
+          git am --3way "$PDIR"/*.patch || { echo "git am 失败，尝试 apply"; git am --abort; git apply --3way "$PDIR"/*.patch; }
+          echo "已应用:"; ls "$PDIR" | sed 's/^/  /'
+
+      - name: 内核树预处理（面板框架等）
+        run: |
+          SETUP="${{ inputs.extra_setup || 'panel' }}"
+          for s in $SETUP; do
+            case "$s" in
+              panel) bash proj/tools/panel-framework-setup.sh "$GITHUB_WORKSPACE/kernel" ;;
+              touch) bash proj/tools/touch-mip4-setup.sh "$GITHUB_WORKSPACE/kernel" ;;
+              battery) bash proj/tools/battery-sm5705-setup.sh "$GITHUB_WORKSPACE/kernel" ;;
+              bhy) bash proj/tools/bhy-sensorhub-setup.sh "$GITHUB_WORKSPACE/kernel" ;;
+              audio) bash proj/tools/audio-rt5659-setup.sh "$GITHUB_WORKSPACE/kernel" ;;
+              none) echo "跳过" ;;
+              *) echo "未知预处理: $s" ;;
+            esac
+          done
+
+      - name: 编译内核
+        run: |
+          cd kernel
+          export PATH="/opt/proton-clang/bin:$PATH"
+          export ARCH=arm64 SUBARCH=arm64
+          MAKE="make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          $MAKE "${{ inputs.defconfig || 'c7ltechn_defconfig' }}" 2>&1 | tail -20
+          set -o pipefail
+          $MAKE -j"$(nproc)" Image.gz-dtb 2>&1 | tee ../build.log | tail -40
+          $MAKE -j"$(nproc)" qcom/msm8953-c7ltechn.dtb 2>&1 | tee -a ../build.log | tail -10
+          $MAKE -j"$(nproc)" modules 2>&1 | tee -a ../build.log | tail -10
+          $MAKE INSTALL_MOD_PATH="$GITHUB_WORKSPACE/modules_out" modules_install 2>&1 | tail -5
+
+      - name: 收集产物
+        run: |
+          mkdir -p artifacts
+          find kernel/out/arch/arm64/boot -maxdepth 1 -name 'Image*' -exec cp {} artifacts/ \;
+          find kernel/out/arch/arm64/boot/dts -name 'msm8953-c7ltechn.dtb' -exec cp {} artifacts/ \; || true
+          ls -lh artifacts/ || true
+          ( cd modules_out && tar czf ../artifacts/modules.tar.gz . ) || true
+          cp build.log artifacts/ 2>/dev/null || true
+          for f in artifacts/*; do [ -e "$f" ] && echo "$f: $(stat -c%s "$f") B"; done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kernel-c7-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30

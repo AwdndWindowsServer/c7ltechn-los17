@@ -1,0 +1,238 @@
+name: build-los17
+
+# =============================================================================
+#  Samsung Galaxy C7 (SM-C7000 / c7ltechn) — LineageOS 17.1（Android 10）纯移植
+#
+#  job kernel: 编 Linux 4.9.337（mido 基线 + C7 补丁 + 三星面板框架）
+#  job port  : donor(mido LOS17.1) 解包 → 组装 system → 组装 boot.img → 卡刷包 → 体检
+#
+#  产物 artifact: lineage-17.1-*-c7ltechn-port-*.zip / boot.img / system.img / 日志
+# =============================================================================
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_artifact_run:
+        description: "复用某次 kernel-c7-4.9 运行的产物的 run_id（留空=本次现编内核）"
+        default: ""
+      donor_url:
+        description: "donor 包地址（留空=用 config.sh 里的 mido LOS17.1）"
+        default: ""
+      c7_blobs:
+        description: "是否叠加 C7 厂商 blob（1=需要 c7ltechn-vendor tarball）"
+        default: "0"
+      make_odin:
+        description: "是否额外生成 Odin 线刷 tar.md5（1=要）"
+        default: "1"
+  push:
+    paths:
+      - "port/**"
+      - "tools/**"
+      - "kernel/**"
+      - "docs/**"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/kernel.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-los17-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  kernel:
+    if: ${{ inputs.kernel_artifact_run == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Free disk space
+        run: |
+          sudo swapoff -a || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost \
+                      /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules /opt/az || true
+          sudo apt-get clean
+          df -h /
+
+      - uses: actions/checkout@v4
+        with: { path: proj }
+
+      - name: 工具链
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            device-tree-compiler bc bison flex libssl-dev libelf-dev cpio xz-utils zip python3
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git /opt/proton-clang
+
+      - name: 克隆基线内核 + 应用 C7 补丁
+        run: |
+          git clone --depth=1 -b lineage-22.2 https://github.com/zeelog/android_kernel_xiaomi_mido.git kernel
+          cd kernel
+          git config user.email ci@c7los17; git config user.name ci
+          PDIR="$GITHUB_WORKSPACE/proj/kernel/patches"
+          git am --3way "$PDIR"/*.patch || { git am --abort; git apply --3way "$PDIR"/*.patch; }
+          echo "补丁: $(ls "$PDIR" | wc -l) 个已应用"
+
+      - name: 面板框架 / 触摸 / 电池 / BHY / 音频 预处理
+        run: |
+          K="$GITHUB_WORKSPACE/kernel"
+          bash proj/tools/panel-framework-setup.sh   "$K" || echo "!! panel-framework-setup 失败"
+          bash proj/tools/touch-mip4-setup.sh        "$K" || true
+          bash proj/tools/battery-sm5705-setup.sh    "$K" || true
+          bash proj/tools/bhy-sensorhub-setup.sh     "$K" || true
+          bash proj/tools/audio-rt5659-setup.sh      "$K" || true
+          grep -c "PANEL_S6E3FA3_AMS598KH01_FHD" "$K/arch/arm64/configs/c7ltechn_defconfig" || true
+
+      - name: 编译 4.9.337
+        run: |
+          cd kernel
+          export PATH="/opt/proton-clang/bin:$PATH" ARCH=arm64 SUBARCH=arm64
+          MAKE="make O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          $MAKE c7ltechn_defconfig 2>&1 | tail -5
+          set -o pipefail
+          $MAKE -j"$(nproc)" Image.gz-dtb 2>&1 | tee ../build.log | tail -30
+          $MAKE -j"$(nproc)" qcom/msm8953-c7ltechn.dtb 2>&1 | tee -a ../build.log | tail -5
+          $MAKE -j"$(nproc)" modules 2>&1 | tee -a ../build.log | tail -5
+          $MAKE INSTALL_MOD_PATH="$GITHUB_WORKSPACE/modules_out" modules_install 2>&1 | tail -3
+
+      - name: 收集内核产物
+        run: |
+          mkdir -p km
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb km/kernel 2>/dev/null || cp kernel/out/arch/arm64/boot/Image.gz km/kernel
+          find kernel/out/arch/arm64/boot/dts -name 'msm8953-c7ltechn.dtb' -exec cp {} km/dtb \; || true
+          ( cd modules_out && tar czf ../km/modules.tar.gz . ) || true
+          cp build.log km/ 2>/dev/null || true
+          ls -l km/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-c7-${{ github.run_number }}
+          path: km/
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  port:
+    needs: [kernel]
+    if: ${{ always() && (inputs.kernel_artifact_run != '' || needs.kernel.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free disk space（要放 3.5 GB system.img + 1.5 GB zip）
+        run: |
+          sudo swapoff -a || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost \
+                      /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules /opt/az || true
+          sudo apt-get clean
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: 取内核产物
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.kernel_artifact_run }}
+        run: |
+          mkdir -p km
+          if [ -n "$RUN_ID" ]; then
+            echo "从 run $RUN_ID 下载 kernel-c7-* artifact"
+            python3 - "$RUN_ID" <<'PY'
+          import json,os,sys,urllib.request,zipfile,io
+          rid=sys.argv[1]; tok=os.environ["GH_TOKEN"]; repo=os.environ["GITHUB_REPOSITORY"]
+          def api(u):
+              r=urllib.request.Request(u,headers={"Authorization":"Bearer "+tok,"Accept":"application/vnd.github+json"})
+              return json.load(urllib.request.urlopen(r,timeout=120))
+          arts=api(f"https://api.github.com/repos/{repo}/actions/runs/{rid}/artifacts")["artifacts"]
+          arts=[a for a in arts if a["name"].startswith("kernel-c7-")]
+          assert arts, "该 run 没有 kernel-c7-* artifact"
+          a=sorted(arts,key=lambda x:x["created_at"])[-1]
+          print("using",a["name"],a["size_in_bytes"])
+          class R(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,req,fp,code,msg,hdrs,newurl):
+                  n=super().redirect_request(req,fp,code,msg,hdrs,newurl)
+                  if n is not None:
+                      for h in ("Authorization","authorization"):
+                          n.headers.pop(h,None); n.unredirected_hdrs.pop(h,None)
+                  return n
+          op=urllib.request.build_opener(R)
+          data=op.open(urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/artifacts/{a['id']}/zip",
+                     headers={"Authorization":"Bearer "+tok}),timeout=600).read()
+          zipfile.ZipFile(io.BytesIO(data)).extractall("km")
+          PY
+          else
+            echo "使用本次 run 的内核 artifact"
+          fi
+          ls -l km/ || true
+
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.kernel_artifact_run == '' }}
+        with:
+          name: kernel-c7-${{ github.run_number }}
+          path: km
+
+      - name: 安装打包依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            unzip zip e2fsprogs cpio xz-utils brotli python3 curl file
+          unzip -v | head -2
+
+      - name: 准备 C7 内核目录
+        run: |
+          sudo mkdir -p work/c7-kernel
+          sudo cp km/kernel work/c7-kernel/kernel
+          if [ -s km/dtb ]; then sudo cp km/dtb work/c7-kernel/dtb; else echo "!! 没有 dtb，boot.img 会退回 donor dt 区（预期黑屏）"; fi
+          if [ -s km/modules.tar.gz ]; then sudo mkdir -p work/c7-kernel/modules && sudo tar xzf km/modules.tar.gz -C work/c7-kernel/modules; fi
+          file work/c7-kernel/kernel; ls -l work/c7-kernel/
+
+      - name: 解包 donor（mido LineageOS 17.1）
+        env: { DONOR_URL: "${{ inputs.donor_url }}" }
+        run: sudo -E bash port/20-unpack.sh
+
+      - name: 组装 system.img
+        env: { C7_BLOBS: "${{ inputs.c7_blobs || '0' }}" }
+        run: sudo -E bash port/30-assemble-system.sh
+
+      - name: 组装 boot.img
+        run: sudo -E bash port/40-make-bootimg.sh
+
+      - name: 打刷机包
+        env: { MAKE_ODIN: "${{ inputs.make_odin || '1' }}" }
+        run: sudo -E bash port/50-make-zip.sh
+
+      - name: 静态体检
+        if: always()
+        run: |
+          [ -f work/build/system.img ] && python3 tools/audit-image.py work/build/system.img || echo "跳过体检"
+          ls -lh out/ || true
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "## LineageOS 17.1 for SM-C7000 (c7ltechn)"
+            echo ""
+            echo "### 产物"
+            ls -l out/ 2>/dev/null | sed 's/^/    /'
+            echo ""
+            echo "### boot.img"
+            [ -f work/build/boot.img ] && { stat -c '%n %s B' work/build/boot.img; sha256sum work/build/boot.img; }
+            echo ""
+            echo "### system.img"
+            [ -f work/build/system.img ] && { stat -c '%n %s B' work/build/system.img; sha256sum work/build/system.img; }
+          } | tee summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: los17-c7-${{ github.run_number }}
+          path: |
+            out/
+            summary.md
+            work/donor/donor.json
+            work/build/KERNEL_VERSION
+          if-no-files-found: warn
+          retention-days: 30
