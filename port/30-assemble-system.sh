@@ -45,6 +45,32 @@ FREE_MB=$(( $(df -k --output=avail "$MNT" | tail -1) / 1024 ))
 log "    挂载 ok，可用空间 ${FREE_MB} MiB"
 log "    根目录: $(ls "$MNT" | tr '\n' ' ')"
 
+# ------------------------------------------------ 2.5 fstab 清理
+# C7 只有 boot/system/cache/persist/modem/apnhlos/dsp/efs/userdata 这些分区，
+# donor 是另一台机器，fstab 里会挂着 C7 不存在的 by-name（cust/product/odm/vendor）。
+# 这些行留着，first-stage init 会等一个永远不来的块设备 → 卡在开机动画/黑屏。
+log "[2.5/6] 清理 fstab 里 C7 不存在的分区挂载 …"
+C7_PARTITIONS=" boot system cache userdata persist modem apnhlos dsp efs modemst1 modemst2 fsg ssd "
+for f in "$MNT/system/vendor/etc/fstab.qcom" "$MNT/system/etc/fstab.qcom" "$MNT/vendor/etc/fstab.qcom"; do
+  [ -f "$f" ] || continue
+  BEFORE=$(wc -l < "$f")
+  cp -a "$f" "$f.orig"
+  awk -v parts="$C7_PARTITIONS" '
+    BEGIN { n=split(parts, P, " "); for (i=1;i<=n;i++) known[P[i]]=1 }
+    /^[[:space:]]*#/ { print; next }
+    NF < 2 { print; next }
+    {
+      src=$1; mnt=$2; keep=1
+      k=split(src, a, "by-name/")
+      if (k > 1) { name=a[2]; if (!(name in known)) keep=0 }
+      if (mnt == "/vendor" || mnt == "/product" || mnt == "/odm" || mnt == "/cust") keep=0
+      if (keep) print
+    }' "$f.orig" > "$f"
+  AFTER=$(wc -l < "$f")
+  log "    $(echo "$f" | sed "s|$MNT||") : $BEFORE → $AFTER 行"
+  diff <(grep -v '^[[:space:]]*$' "$f.orig") <(grep -v '^[[:space:]]*$' "$f") | grep '^<' | sed 's/^/      删除: /' || true
+done
+
 # ------------------------------------------------ 3. donor 独立 vendor 合并
 if [ -s "$DONOR_VND" ]; then
   log "[3/6] donor 有独立 vendor.img → 合并进 /system/vendor …"
