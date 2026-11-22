@@ -45,11 +45,27 @@ FREE_MB=$(( $(df -k --output=avail "$MNT" | tail -1) / 1024 ))
 log "    挂载 ok，可用空间 ${FREE_MB} MiB"
 log "    根目录: $(ls "$MNT" | tr '\n' ' ')"
 
-# ------------------------------------------------ 2.5 fstab 清理
+# ------------------------------------------------ 3. donor 独立 vendor 合并
+if [ -s "$DONOR_VND" ]; then
+  log "[3/6] donor 有独立 vendor.img → 合并进 /system/vendor …"
+  rm -rf "$MNT/system/vendor"; mkdir -p "$MNT/system/vendor"
+  VND_MNT="$BUILD/mnt-vnd"; mkdir -p "$VND_MNT"
+  mountpoint -q "$VND_MNT" && umount "$VND_MNT"
+  mount -o loop,ro "$DONOR_VND" "$VND_MNT"
+  cp -a "$VND_MNT/." "$MNT/system/vendor/"
+  umount "$VND_MNT"
+  [ -L "$MNT/vendor" ] || { rm -rf "$MNT/vendor"; ln -s /system/vendor "$MNT/vendor"; }
+  log "    vendor 文件数: $(find "$MNT/system/vendor" -type f | wc -l)，/vendor -> /system/vendor 已建立"
+else
+  log "[3/6] donor 是 vendor-in-system 布局，跳过 vendor 合并"
+  if [ -e "$MNT/system/vendor" ]; then log "    /system/vendor 已存在（$(find "$MNT/system/vendor" -maxdepth 1 | wc -l) 项）"; fi
+fi
+
+# ------------------------------------------------ 3.5 fstab 清理（必须在 vendor 合并之后）
 # C7 只有 boot/system/cache/persist/modem/apnhlos/dsp/efs/userdata 这些分区，
 # donor 是另一台机器，fstab 里会挂着 C7 不存在的 by-name（cust/product/odm/vendor）。
 # 这些行留着，first-stage init 会等一个永远不来的块设备 → 卡在开机动画/黑屏。
-log "[2.5/6] 清理 fstab 里 C7 不存在的分区挂载 …"
+log "[3.5/6] 清理 fstab 里 C7 不存在的分区挂载 …"
 C7_PARTITIONS=" boot system cache userdata persist modem apnhlos dsp efs modemst1 modemst2 fsg ssd "
 for f in "$MNT/system/vendor/etc/fstab.qcom" "$MNT/system/etc/fstab.qcom" "$MNT/vendor/etc/fstab.qcom"; do
   [ -f "$f" ] || continue
@@ -68,24 +84,9 @@ for f in "$MNT/system/vendor/etc/fstab.qcom" "$MNT/system/etc/fstab.qcom" "$MNT/
     }' "$f.orig" > "$f"
   AFTER=$(wc -l < "$f")
   log "    $(echo "$f" | sed "s|$MNT||") : $BEFORE → $AFTER 行"
+  if [ "$BEFORE" = "$AFTER" ] && [ "$BEFORE" -gt 0 ]; then sed 's/^/      | /' "$f" | head -20; fi
   diff <(grep -v '^[[:space:]]*$' "$f.orig") <(grep -v '^[[:space:]]*$' "$f") | grep '^<' | sed 's/^/      删除: /' || true
 done
-
-# ------------------------------------------------ 3. donor 独立 vendor 合并
-if [ -s "$DONOR_VND" ]; then
-  log "[3/6] donor 有独立 vendor.img → 合并进 /system/vendor …"
-  rm -rf "$MNT/system/vendor"; mkdir -p "$MNT/system/vendor"
-  VND_MNT="$BUILD/mnt-vnd"; mkdir -p "$VND_MNT"
-  mountpoint -q "$VND_MNT" && umount "$VND_MNT"
-  mount -o loop,ro "$DONOR_VND" "$VND_MNT"
-  cp -a "$VND_MNT/." "$MNT/system/vendor/"
-  umount "$VND_MNT"
-  [ -L "$MNT/vendor" ] || { rm -rf "$MNT/vendor"; ln -s /system/vendor "$MNT/vendor"; }
-  log "    vendor 文件数: $(find "$MNT/system/vendor" -type f | wc -l)，/vendor -> /system/vendor 已建立"
-else
-  log "[3/6] donor 是 vendor-in-system 布局，跳过 vendor 合并"
-  [ -e "$MNT/system/vendor" ] && log "    /system/vendor 已存在（$(find "$MNT/system/vendor" -maxdepth 1 | wc -l) 项）"
-fi
 
 # ------------------------------------------------ 4. C7 原厂 blob（可选）
 if [ "${C7_BLOBS:-0}" = "1" ] && [ -d "$C7_VENDOR_DIR" ]; then
