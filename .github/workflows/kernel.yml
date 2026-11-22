@@ -104,9 +104,9 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
           $MAKE "${{ inputs.defconfig || 'c7ltechn_defconfig' }}" 2>&1 | tail -20
           set -o pipefail
-          $MAKE -j"$(nproc)" Image.gz-dtb 2>&1 | tee ../build.log | tail -40
-          $MAKE -j"$(nproc)" qcom/msm8953-c7ltechn.dtb 2>&1 | tee -a ../build.log | tail -10
-          $MAKE -j"$(nproc)" modules 2>&1 | tee -a ../build.log | tail -10
+          $MAKE -j"$(nproc)" Image.gz-dtb 2>&1 | tee "$GITHUB_WORKSPACE/kbuild-full.log" | tail -40
+          $MAKE -j"$(nproc)" qcom/msm8953-c7ltechn.dtb 2>&1 | tee -a "$GITHUB_WORKSPACE/kbuild-full.log" | tail -10
+          $MAKE -j"$(nproc)" modules 2>&1 | tee -a "$GITHUB_WORKSPACE/kbuild-full.log" | tail -10
           $MAKE INSTALL_MOD_PATH="$GITHUB_WORKSPACE/modules_out" modules_install 2>&1 | tail -5
 
       - name: 收集产物
@@ -118,6 +118,27 @@ jobs:
           ( cd modules_out && tar czf ../artifacts/modules.tar.gz . ) || true
           cp build.log artifacts/ 2>/dev/null || true
           for f in artifacts/*; do [ -e "$f" ] && echo "$f: $(stat -c%s "$f") B"; done
+
+      - name: 导出编译错误
+        if: failure()
+        run: |
+          LOG="$GITHUB_WORKSPACE/kbuild-full.log"
+          [ -f "$LOG" ] || { echo "没有 build log"; exit 0; }
+          echo "=== 前 60 条错误 ==="
+          grep -nE "error:|错误|Error [0-9]|\*\*\*|undefined reference|No such file" "$LOG" | head -60 || true
+          echo "=== 末尾 80 行 ==="
+          tail -80 "$LOG"
+          grep -nE "error:|Error [0-9]|\*\*\*" "$LOG" | head -60 > kerrors.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kbuild-log-${{ github.run_number }}
+          path: |
+            kbuild-full.log
+            kerrors.txt
+          if-no-files-found: ignore
+          retention-days: 14
 
       - uses: actions/upload-artifact@v4
         if: always()
