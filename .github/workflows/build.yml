@@ -217,23 +217,24 @@ jobs:
 
       - name: 解包 donor（mido LineageOS 17.1）
         env: { DONOR_URL: "${{ inputs.donor_url }}" }
-        run: sudo -E bash port/20-unpack.sh
+        run: |
+          if [ -n "${DONOR_URL}" ]; then sudo env DONOR_URL="$DONOR_URL" bash port/20-unpack.sh
+          else sudo bash port/20-unpack.sh; fi
 
       - name: 组装 system.img
-        env: { C7_BLOBS: "${{ inputs.c7_blobs || '0' }}" }
-        run: sudo -E bash port/30-assemble-system.sh
+        run: sudo env C7_BLOBS="${{ inputs.c7_blobs || '0' }}" bash port/30-assemble-system.sh
 
       - name: 组装 boot.img
-        run: sudo -E bash port/40-make-bootimg.sh
+        run: sudo env MODULES_STRIP="${MODULES_STRIP:-0}" bash port/40-make-bootimg.sh
 
       - name: 打刷机包
-        env: { MAKE_ODIN: "${{ inputs.make_odin || '1' }}" }
-        run: sudo -E bash port/50-make-zip.sh
+        run: sudo env MAKE_ODIN="${{ inputs.make_odin || '1' }}" bash port/50-make-zip.sh
 
       - name: 静态体检
         if: always()
         run: |
-          [ -f work/build/system.img ] && python3 tools/audit-image.py work/build/system.img || echo "跳过体检"
+          # audit-image.py 要 loop 挂载 system.img，必须 root
+          [ -f work/build/system.img ] && sudo python3 tools/audit-image.py work/build/system.img || echo "体检跳过/有告警"
           ls -lh out/ || true
 
       - name: 汇总
@@ -259,6 +260,7 @@ jobs:
           name: los17-c7-${{ github.run_number }}
           path: |
             out/
+            work/build/boot.img
             summary.md
             work/donor/donor.json
             work/build/KERNEL_VERSION

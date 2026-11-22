@@ -26,7 +26,7 @@ ZIPDIR="$BUILD/zip"; rm -rf "$ZIPDIR"; mkdir -p "$ZIPDIR/META-INF/com/google/and
 log "[1/4] 复制镜像到打包目录 …"
 cp --sparse=always "$SYS_IMG" "$ZIPDIR/system.img"
 cp -f "$BOOT_IMG" "$ZIPDIR/boot.img"
-[ -d "$BUILD/vendor-modules" ] && cp -a "$BUILD/vendor-modules" "$ZIPDIR/modules"
+if [ -d "$BUILD/vendor-modules" ]; then cp -a "$BUILD/vendor-modules" "$ZIPDIR/modules"; fi
 
 log "[2/4] 生成 updater-script …"
 cat > "$ZIPDIR/META-INF/com/google/android/updater-script" <<EOF
@@ -74,6 +74,11 @@ chmod 0755 "$ZIPDIR/META-INF/com/google/android/update-binary"
 log "[4/4] 压缩 zip …"
 ( cd "$ZIPDIR" && zip -r -q -9 "$OUT/$ZIPNAME" . -x '.*' )
 log "产物: $OUT/$ZIPNAME ($(du -h "$OUT/$ZIPNAME" | cut -f1))"
+
+# 单刷 boot.img 的场景（heimdall / fastboot）单独放一份
+cp -f "$BOOT_IMG" "$OUT/boot.img"
+if [ -d "$BUILD/vendor-modules" ]; then ( cd "$BUILD" && tar czf "$OUT/vendor-modules.tar.gz" vendor-modules ); fi
+log "已附带: out/boot.img ($(stat -c%s "$OUT/boot.img") B)"
 
 if [ "${MAKE_ODIN:-0}" = "1" ]; then
   log "生成 Odin AP tar.md5 …"
