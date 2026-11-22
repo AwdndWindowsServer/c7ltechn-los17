@@ -39,9 +39,9 @@ GH_PROXY="${GH_PROXY:-}"           # 可选：https://gh-proxy.com/ 这类 githu
 
 # ---------- C7 侧素材 ----------
 # 原厂 vendor/system 闭源 blob 树（可选；没有也能出"能开机"的第一版）
-C7_VENDOR_TARBALL="${C7_VENDOR_TARBALL:-}"
+C7_VENDOR_TARBALL="${C7_VENDOR_TARBALL:-https://codeload.github.com/AwdndWindowsServer/c7ltechn-blobs/tar.gz/refs/heads/main}"
 C7_VENDOR_DIR="${C7_VENDOR_DIR:-$WORK/vendor-src/vendor/samsung/c7ltechn/proprietary}"
-C7_BLOBS="${C7_BLOBS:-0}"          # 1 = 把 C7 原厂 blob 叠进 system
+C7_BLOBS="${C7_BLOBS:-1}"          # 1 = 把 C7 原厂 blob 叠进 system（缺 blob 时自动降级为 0）
 
 # ---------- C7 内核（4.9.337）----------
 # 目录内需有 kernel(Image.gz-dtb) 与 dtb(msm8953-c7ltechn.dtb)；由 kernel.yml 产出

@@ -66,9 +66,19 @@ fi
 if [ "$C7_BLOBS" = "1" ]; then
   if [ ! -d "$C7_VENDOR_DIR" ] && [ -n "$C7_VENDOR_TARBALL" ]; then
     log "[5/5] 取 C7 原厂 vendor/system blob 树 …"
-    fetch "$C7_VENDOR_TARBALL" "$WORK/c7vendor.tar.gz"
-    mkdir -p "$WORK/vendor-src"
-    tar xzf "$WORK/c7vendor.tar.gz" -C "$WORK/vendor-src" --strip-components=1
+    for attempt in 1 2; do
+      fetch "$C7_VENDOR_TARBALL" "$WORK/c7vendor.tar.gz"
+      tar tzf "$WORK/c7vendor.tar.gz" >/dev/null 2>&1 && break
+      warn "blob 压缩包不完整（第 $attempt 次），重下"
+      rm -f "$WORK/c7vendor.tar.gz"
+    done
+    if tar tzf "$WORK/c7vendor.tar.gz" >/dev/null 2>&1; then
+      mkdir -p "$WORK/vendor-src"
+      tar xzf "$WORK/c7vendor.tar.gz" -C "$WORK/vendor-src" --strip-components=1
+    else
+      warn "拿不到完整的 C7 blob 包，本次退化为不带原厂 blob"
+      rm -f "$WORK/c7vendor.tar.gz"
+    fi
   fi
   if [ -d "$C7_VENDOR_DIR" ]; then
     log "    C7 vendor blob: $(find "$C7_VENDOR_DIR/vendor" -type f 2>/dev/null | wc -l) 个文件"

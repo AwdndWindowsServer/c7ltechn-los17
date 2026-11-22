@@ -90,29 +90,45 @@ done
 
 # ------------------------------------------------ 4. C7 原厂 blob（可选）
 if [ "${C7_BLOBS:-0}" = "1" ] && [ -d "$C7_VENDOR_DIR" ]; then
-  log "[4/6] 叠加 C7 原厂 blob（不覆盖 donor 同名文件）…"
+  MODE="${C7_BLOB_MODE:-minimal}"
+  log "[4/6] 叠加 C7 原厂 blob（模式 $MODE，不覆盖 donor 同名文件）…"
   C7V="$C7_VENDOR_DIR/vendor"; C7S="$C7_VENDOR_DIR/system"
   ADDED=0; KEPT=0
-  while IFS= read -r f; do
-    rel="${f#./}"
-    d="$MNT/system/vendor/$rel"
-    if [ -e "$d" ] || [ -L "$d" ]; then KEPT=$((KEPT+1)); continue; fi
-    mkdir -p "$(dirname "$d")"; cp -a "$C7V/$rel" "$d" 2>/dev/null && ADDED=$((ADDED+1))
-  done < <( cd "$C7V" && find . -type f )
-  while IFS= read -r f; do
-    rel="${f#./}"
-    d="$MNT/system/$rel"
-    [ -e "$d" ] || [ -L "$d" ] && continue
-    mkdir -p "$(dirname "$d")"; cp -a "$C7S/$rel" "$d" 2>/dev/null || true
-  done < <( cd "$C7S" && find . -type f )
-  # 白名单：与 C7 硬件强绑定的必须用原厂
-  for f in bin/hw/rild lib64/libsec-ril.so lib64/libsec-ril-dsds.so lib64/libsecril-client.so \
-           lib/hw/sensors.msm8953.so lib64/hw/sensors.msm8953.so \
-           etc/mixer_paths.xml etc/mixer_paths_mtp.xml etc/audio_platform_info.xml \
-           etc/Tfa9897.cnt etc/gps.conf; do
-    [ -e "$C7V/$f" ] && { mkdir -p "$(dirname "$MNT/system/vendor/$f")"; cp -af "$C7V/$f" "$MNT/system/vendor/$f"; }
+
+  put() {   # put <src> <dst>
+    [ -e "$1" ] || return 0
+    if [ -e "$2" ] || [ -L "$2" ]; then KEPT=$((KEPT+1)); return 0; fi
+    mkdir -p "$(dirname "$2")"; cp -a "$1" "$2" 2>/dev/null && ADDED=$((ADDED+1))
+    return 0
+  }
+  # 硬件相关、donor 一定没有的东西：原厂配置目录整棵搬，库按白名单搬。
+  for d in etc firmware bhy_firmware; do
+    [ -d "$C7V/$d" ] || continue
+    while IFS= read -r f; do put "$f" "$MNT/system/vendor/${f#$C7V/}"; done < <( find "$C7V/$d" -type f 2>/dev/null )
   done
-  for d in bhy_firmware firmware/wlan etc/wifi etc/camera; do
+  if [ "$MODE" = "full" ]; then
+    while IFS= read -r f; do put "$f" "$MNT/system/vendor/${f#$C7V/}"; done < <( find "$C7V/lib" "$C7V/lib64" "$C7V/bin" -type f 2>/dev/null )
+    [ -d "$C7S" ] && while IFS= read -r f; do put "$f" "$MNT/system/${f#$C7S/}"; done < <( find "$C7S" -type f 2>/dev/null )
+  else
+    for f in lib/hw/sensors.msm8953.so lib64/hw/sensors.msm8953.so \
+             lib/hw/vendor.samsung.hardware.camera.provider@2.4-impl.so \
+             lib64/hw/vendor.samsung.hardware.camera.provider@2.4-impl.so \
+             lib/vendor.samsung.hardware.camera.provider@2.4.so \
+             lib64/vendor.samsung.hardware.camera.provider@2.4.so \
+             lib/libmm-qcamera.so lib64/libmm-qcamera.so \
+             lib/libTfa9897.so lib64/libTfa9897.so lib/libtfa9897.so lib64/libtfa9897.so \
+             lib/libril.so lib/librilutils.so lib64/libril.so lib64/librilutils.so; do
+      put "$C7V/$f" "$MNT/system/vendor/$f"
+    done
+  fi
+  # 白名单：与 C7 硬件强绑定，必须用原厂（覆盖 donor 同名）
+  for f in etc/mixer_paths.xml etc/mixer_paths_mtp.xml etc/audio_platform_info.xml \
+           etc/Tfa9897.cnt etc/gps.conf; do
+    if [ -e "$C7V/$f" ]; then
+      mkdir -p "$(dirname "$MNT/system/vendor/$f")"; cp -af "$C7V/$f" "$MNT/system/vendor/$f"
+    fi
+  done
+  for d in etc/camera etc/wifi firmware/wlan; do
     [ -d "$C7V/$d" ] || continue
     rm -rf "$MNT/system/vendor/$d"; mkdir -p "$MNT/system/vendor/$d"
     cp -a "$C7V/$d/." "$MNT/system/vendor/$d/"
@@ -121,7 +137,7 @@ if [ "${C7_BLOBS:-0}" = "1" ] && [ -d "$C7_VENDOR_DIR" ]; then
   for dir in lib lib64; do
     tgt="$MNT/system/vendor/$dir/libhidlbase.so"
     lnk="$MNT/system/vendor/$dir/android.hidl.base@1.0.so"
-    [ -e "$tgt" ] && [ ! -e "$lnk" ] && ln -s libhidlbase.so "$lnk"
+    if [ -e "$tgt" ] && [ ! -e "$lnk" ]; then ln -s libhidlbase.so "$lnk"; fi
   done
   log "    新增 $ADDED 个 C7 文件（donor 已有 $KEPT 个同名，保留 donor 版本）"
 else
