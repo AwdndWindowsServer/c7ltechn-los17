@@ -7,7 +7,19 @@
 > （红米 Note 4 / mido 的 LineageOS 17.1）的 Android 10 用户态，换上 C7 自己的 **Linux 4.9.337 内核**
 > 和 C7 的 QCDT/DTB，再按 C7 的分区表重新打包。
 
-当前状态：脚本与 CI 已就绪，第一个可刷包由 GitHub Actions 产出，等待真机验证后按日志迭代。
+当前状态：**第一个可刷包已由 CI 产出，等待真机验证**。
+
+最新产物（2026-11-22，run [45054168073](https://github.com/AwdndWindowsServer/c7ltechn-los17/actions/runs/45054168073)）：
+
+| 文件 | 大小 | 用途 |
+| --- | --- | --- |
+| `c7ltechn-port-odin-20261122.tar.md5` | 3.6 GB | 搞机助手/Odin 的 AP 槽 |
+| `lineage-17.1-c7ltechn-port-20261122-UNOFFICIAL-kernel4.9.337.zip` | 699 MB | TWRP 卡刷 |
+| `boot.img` | 13.8 MB | 单独刷 boot |
+
+静态体检结论：硬性问题 0 项；system.img 3.59 GiB 正好放进 C7 SYSTEM（余 4 MiB）；所有文件带 SELinux 标签；
+boot.img 为三星 v0 头 + QCDT（`msm_id=293`、`board_id=8`、subtype `0/3/4`）+ `SEANDROIDENFORCE`。
+原厂闭源 blob 来自 [c7ltechn-blobs](https://github.com/AwdndWindowsServer/c7ltechn-blobs)，关键三星文件 11/15 在位。
 
 ---
 
@@ -80,6 +92,8 @@ docs/         移植架构、刷机与排障
 ## 五、当前已知限制（第一版）
 
 * 首版目标是「能亮能进桌面」：显示、触摸、USB、Wi-Fi 按驱动就绪情况逐个验证。
+* 原厂 blob 默认按 `C7_BLOB_MODE=minimal` 叠加（传感器 HAL、相机 provider、音频参数、Wi-Fi/BHY 固件）；
+  `libsec-ril*` 仍用 donor 的 RIL 栈，指纹 HAL 与 32 位 `libmm-qcamera.so` 未叠加（`C7_BLOB_MODE=full` 才全量）。
 * 相机（三星 S5K3P3 系列标定）、指纹（与 NFC 共用 I2C）、双卡 RIL 需要真机日志继续调。
 * 没有 Treble：vendor 全部在 `/system/vendor`，`/vendor` 是符号链接。
 * 不修改 bootloader / EFS / PERSIST / PARAM / MODEM / DSP。
