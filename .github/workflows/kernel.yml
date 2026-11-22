@@ -80,6 +80,11 @@ jobs:
       - name: 内核树预处理（面板框架等）
         run: |
           SETUP="${{ inputs.extra_setup || 'panel' }}"
+          K="$GITHUB_WORKSPACE/kernel"
+          # clang 不认 GCC 专有的 -Werror=bool-compare/-Werror=maybe-uninitialized（当硬错误），
+          # 补丁里已改成 cc-option 探测；这里对已应用的树再兜一次底。
+          MK="$K/drivers/input/keyboard/Makefile"
+          [ -f "$MK" ] && sed -i 's|^CFLAGS_abov_touchkey_16xx.o += .*|CFLAGS_abov_touchkey_16xx.o += $(call cc-option,-Wno-error=bool-compare) $(call cc-option,-Wno-error=maybe-uninitialized)|' "$MK" || true
           for s in $SETUP; do
             case "$s" in
               panel) bash proj/tools/panel-framework-setup.sh "$GITHUB_WORKSPACE/kernel" ;;

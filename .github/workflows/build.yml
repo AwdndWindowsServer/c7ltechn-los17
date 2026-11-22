@@ -78,6 +78,10 @@ jobs:
       - name: 面板框架 / 触摸 / 电池 / BHY / 音频 预处理
         run: |
           K="$GITHUB_WORKSPACE/kernel"
+          # clang 不认 GCC 专有的 -Werror=bool-compare/-Werror=maybe-uninitialized（当硬错误），
+          # 补丁里已改成 cc-option 探测；这里对已应用的树再兜一次底。
+          MK="$K/drivers/input/keyboard/Makefile"
+          [ -f "$MK" ] && sed -i 's|^CFLAGS_abov_touchkey_16xx.o += .*|CFLAGS_abov_touchkey_16xx.o += $(call cc-option,-Wno-error=bool-compare) $(call cc-option,-Wno-error=maybe-uninitialized)|' "$MK" || true
           bash proj/tools/panel-framework-setup.sh   "$K" || echo "!! panel-framework-setup 失败"
           bash proj/tools/touch-mip4-setup.sh        "$K" || true
           bash proj/tools/battery-sm5705-setup.sh    "$K" || true

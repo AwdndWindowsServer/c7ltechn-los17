@@ -783,13 +783,14 @@ diff --git a/drivers/input/keyboard/Makefile b/drivers/input/keyboard/Makefile
 index d9f4cfc..a484d72 100644
 --- a/drivers/input/keyboard/Makefile
 +++ b/drivers/input/keyboard/Makefile
-@@ -64,3 +64,6 @@ obj-$(CONFIG_KEYBOARD_TEGRA)		+= tegra-kbc.o
+@@ -64,3 +64,7 @@ obj-$(CONFIG_KEYBOARD_TEGRA)		+= tegra-kbc.o
  obj-$(CONFIG_KEYBOARD_TWL4030)		+= twl4030_keypad.o
  obj-$(CONFIG_KEYBOARD_XTKBD)		+= xtkbd.o
  obj-$(CONFIG_KEYBOARD_W90P910)		+= w90p910_keypad.o
 +obj-$(CONFIG_KEYBOARD_ABOV_TOUCH_16XX)	+= abov_touchkey_16xx.o
 +obj-$(CONFIG_KEYBOARD_ABOV_TOUCH_16XX)	+= abov_touchkey_sec.o
-+CFLAGS_abov_touchkey_16xx.o += -Wno-error=bool-compare -Wno-error=maybe-uninitialized
++# 这些是 GCC 专有警告；用 cc-option 探测，clang 下自动跳过（proton-clang 会把未知 -Werror=xxx 当硬错误）
++CFLAGS_abov_touchkey_16xx.o += $(call cc-option,-Wno-error=bool-compare) $(call cc-option,-Wno-error=maybe-uninitialized)
 diff --git a/drivers/input/keyboard/abov_touchkey_16xx.c b/drivers/input/keyboard/abov_touchkey_16xx.c
 new file mode 100755
 index 0000000..19c726a
