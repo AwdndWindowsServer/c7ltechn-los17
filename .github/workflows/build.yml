@@ -18,11 +18,11 @@ on:
         description: "donor 包地址（留空=用 config.sh 里的 mido LOS17.1）"
         default: ""
       c7_blobs:
-        description: "是否叠加 C7 厂商 blob（1=需要 c7ltechn-vendor tarball）"
-        default: "0"
-      make_odin:
-        description: "是否额外生成 Odin 线刷 tar.md5（1=要）"
+        description: "是否叠加 C7 厂商 blob（1=需要 c7ltechn-blobs tarball）"
         default: "1"
+      make_odin:
+        description: "是否额外生成 Odin 线刷 tar.md5（默认关，只出 TWRP 卡刷包）"
+        default: "0"
   push:
     paths:
       - "port/**"
@@ -231,8 +231,8 @@ jobs:
       - name: 组装 boot.img
         run: sudo env MODULES_STRIP="${MODULES_STRIP:-0}" bash port/40-make-bootimg.sh
 
-      - name: 打刷机包
-        run: sudo env MAKE_ODIN="${{ inputs.make_odin || '1' }}" bash port/50-make-zip.sh
+      - name: 打刷机包（TWRP 卡刷包，可选 Odin）
+        run: sudo env MAKE_ODIN="${{ inputs.make_odin || '0' }}" bash port/50-make-zip.sh
 
       - name: 静态体检
         if: always()

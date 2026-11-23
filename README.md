@@ -74,16 +74,19 @@ docs/         移植架构、刷机与排障
 
 前置：OEM 解锁（下载模式显示 `OEM LOCK: OFF`）、**先备份 EFS / modemst1 / modemst2 / persist**。
 
-### 方式 A：Odin / 搞机助手（推荐先试）
+### 方式 A：TWRP 卡刷（默认、唯一交付形式）
 
-1. 关机 → **电源 + Home + 音量减** → 音量加，进下载模式。
-2. 搞机助手/Odin 的 **AP** 槽选 `c7ltechn-port-odin-<date>.tar.md5`，只勾 `Auto Reboot`、`F.Reset Time`。
-3. 开始 → 约 3~8 分钟写完 system → 自动重启。
+1. 先装一次 recovery（PBRP/TWRP，一次即可）：Odin/搞机助手 **AP** 槽刷 `recovery.tar`
+   （内含 `recovery.img`，写进 C7 的 RECOVERY 分区，32 MiB）。
+2. 关机 → **电源 + Home + 音量加**，进 recovery（PBRP）。
+3. 先 **清除 → 格式化 Data 分区**（首次必须），再 **安装** 选
+   `lineage-17.1-c7ltechn-port-<date>-UNOFFICIAL-kernel4.9.337.zip`。
+4. 刷完回主菜单 **重启系统**。
 
-### 方式 B：TWRP 卡刷
+> 卡刷包只写 `boot` + `system` 两个分区，不动 bootloader / EFS / PERSIST / PARAM / MODEM / DSP。
+> 提前在 recovery 里备份 EFS / modemst1 / modemst2 / persist。
 
-1. 已有 TWRP 的话直接卡刷 zip；首次必须 **格式化 data**（清除 → 格式化 Data 分区）。
-2. 没有 TWRP：先刷本仓库/社区提供的 recovery（或先用方式 A）。
+### 方式 B：Odin 线刷（可选，需手动在 workflow 里打开 make_odin）
 
 刷完首启 **3~10 分钟**（首次 dex2oat 很慢），屏幕会先出三星 logo，然后出现 Lineage 开机动画。
 
