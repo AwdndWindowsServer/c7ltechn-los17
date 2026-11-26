@@ -1,0 +1,54 @@
+name: release-los17
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: 'Artifact name to publish (e.g. los17-c7-19)'
+        required: true
+        default: 'los17-c7-19'
+      run_id:
+        description: 'Run id that produced the artifact'
+        required: true
+        default: '45831874436'
+      release_tag:
+        description: 'Release tag'
+        required: true
+        default: 'los17-c7-19'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dl
+
+      - name: List
+        run: find dl -type f -exec ls -l {} \;
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ZIP=$(find dl -name 'lineage-17.1-*.zip' | head -1)
+          BOOT=$(find dl -name 'boot.img' | head -1)
+          [ -n "$ZIP" ] || { echo "no zip"; exit 1; }
+          gh release create "${{ inputs.release_tag }}" "$ZIP" ${BOOT:+"$BOOT"} \
+            --repo "$GITHUB_REPOSITORY" \
+            --target main \
+            --title "LOS 17.1 for SM-C7000 (kernel 4.9.337)" \
+            --notes "TWRP 卡刷包。首次务必格式化 data。sha256 见下。" \
+            || true
+          gh release upload "${{ inputs.release_tag }}" "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
+          [ -n "$BOOT" ] && gh release upload "${{ inputs.release_tag }}" "$BOOT" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "### sha256" >> "$GITHUB_STEP_SUMMARY"
+          sha256sum "$ZIP" ${BOOT:+"$BOOT"} | tee -a "$GITHUB_STEP_SUMMARY"
